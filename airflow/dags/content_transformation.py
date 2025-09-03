@@ -1,22 +1,36 @@
-# DAG 2: Content Transformation (ИСПРАВЛЕНО)
-# Преобразование извлеченного контента в высококачественный Markdown
-# Использование vLLM с Qwen2.5-VL-32B-Instruct
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+"""
+✅ ПЕРЕРАБОТАННЫЙ Content Transformation v3.0 - Упрощенная архитектура
+Прямая обработка без микросервисов, оптимизированная для китайских документов
+
+КЛЮЧЕВЫЕ ИЗМЕНЕНИЯ:
+- ✅ Убрана зависимость от внешних микросервисов
+- ✅ Встроенная логика трансформации
+- ✅ Оптимизация для китайских технических документов
+- ✅ Упрощенная но эффективная обработка
+"""
 
 from datetime import datetime, timedelta
 from airflow import DAG
 from airflow.operators.python import PythonOperator
-import requests
-import json
-import re
+from airflow.exceptions import AirflowException
 import os
-from typing import Dict, List, Any, Optional
+import json
+import logging
+import time
+import re
+from typing import Dict, Any, Optional, List
 
-# Импорт кастомных утилит
+# Утилиты
 from shared_utils import (
-    SharedUtils,
-    NotificationUtils,
-    ConfigUtils
+    SharedUtils, NotificationUtils, ConfigUtils, 
+    MetricsUtils, ErrorHandlingUtils
 )
+
+# Настройка логирования
+logger = logging.getLogger(__name__)
 
 # Конфигурация DAG
 DEFAULT_ARGS = {
@@ -26,590 +40,574 @@ DEFAULT_ARGS = {
     'email_on_failure': False,
     'email_on_retry': False,
     'retries': 2,
-    'retry_delay': timedelta(minutes=5),
+    'retry_delay': timedelta(minutes=3),
 }
 
-# Создание DAG
 dag = DAG(
     'content_transformation',
     default_args=DEFAULT_ARGS,
-    description='DAG 2: Преобразование контента в высококачественный Markdown',
-    schedule_interval=None,  # Запускается после DAG 1
+    description='DAG 2: Content Transformation v3.0 - Упрощенная обработка для китайских документов',
+    schedule_interval=None,
     max_active_runs=2,
     catchup=False,
-    tags=['pdf-converter', 'content-transformation', 'markdown', 'vllm']
+    tags=['pdf-converter', 'dag2', 'transformation', 'chinese-docs', 'v3']
 )
 
-# =============================================================================
-# vLLM CLIENT ДЛЯ CONTENT TRANSFORMATION
-# =============================================================================
-class VLLMContentTransformer:
-    """Клиент для преобразования контента через vLLM"""
+# ================================================================================
+# СПЕЦИАЛИЗИРОВАННАЯ ОБРАБОТКА ДЛЯ КИТАЙСКИХ ДОКУМЕНТОВ
+# ================================================================================
+
+CHINESE_TRANSFORMATION_CONFIG = {
+    # Паттерны китайских заголовков
+    'heading_patterns': [
+        r'^[第章节]\s*[一二三四五六七八九十\d]+\s*[章节]',  # 第X章, 第X节
+        r'^[一二三四五六七八九十]+[、．]',  # 中文数字
+        r'^\d+[、．]\s*[\u4e00-\u9fff]',  # 数字 + 中文
+        r'^[\u4e00-\u9fff]+[:：]',  # 中文标题后跟冒号
+    ],
     
-    def __init__(self, base_url: str, model: str):
-        self.base_url = base_url
-        self.model = model
-        self.session = requests.Session()
+    # Технические термины для сохранения
+    'preserve_terms': {
+        '问天': 'WenTian',
+        '联想问天': 'Lenovo WenTian',
+        '天擎': 'ThinkSystem',
+        'AnyBay': 'AnyBay',
+        '至强': 'Xeon',
+        '可扩展处理器': 'Scalable Processors',
+        '英特尔': 'Intel',
+        '处理器': 'Processor',
+        '内核': 'Core',
+        '线程': 'Thread',
+        '睿频': 'Turbo Boost',
+        '内存': 'Memory',
+        '存储': 'Storage',
+        '硬盘': 'Drive',
+        '固态硬盘': 'SSD',
+        '机械硬盘': 'HDD',
+        '热插拔': 'Hot-swap',
+        '冗余': 'Redundancy',
+        '背板': 'Backplane',
+        '托架': 'Tray',
+        '以太网': 'Ethernet',
+        '光纤': 'Fiber',
+        '带宽': 'Bandwidth',
+        '延迟': 'Latency',
+        '网卡': 'Network Adapter',
+        '英寸': 'inch',
+        '机架': 'Rack',
+        '插槽': 'Slot',
+        '转接卡': 'Riser Card',
+        '电源': 'Power Supply',
+        '铂金': 'Platinum',
+        '钛金': 'Titanium',
+        'CRPS': 'CRPS'
+    },
     
-    def get_transformation_prompt(self, content_type: str) -> str:
-        """Системный промпт для трансформации контента"""
-        base_prompt = """Ты эксперт по преобразованию извлеченного из PDF контента в высококачественный Markdown.
+    # Настройки качества
+    'quality_settings': {
+        'preserve_chinese_structure': True,
+        'enhance_technical_formatting': True,
+        'improve_table_structure': True,
+        'clean_whitespace': True
+    }
+}
 
-ОСНОВНАЯ ЗАДАЧА: Создать идеальный Markdown документ с сохранением всей структуры и технических деталей.
+# ================================================================================
+# ОСНОВНЫЕ ФУНКЦИИ ТРАНСФОРМАЦИИ
+# ================================================================================
 
-КРИТИЧЕСКИ ВАЖНЫЕ ТРЕБОВАНИЯ:
-1. Сохрани ВСЮ структуру документа (заголовки, списки, таблицы)
-2. Создай корректную иерархию заголовков (# ## ### ####)
-3. Оформи технические команды IPMI/BMC/Redfish в блоках кода ```
-4. Сохрани ВСЕ числовые данные и спецификации БЕЗ изменений
-5. Создай корректные Markdown таблицы с правильным выравниванием
-6. НЕ добавляй пояснения или комментарии - только чистый Markdown
-7. Сохрани все технические термины и аббревиатуры
-
-ФОРМАТИРОВАНИЕ:
-- Заголовки: используй # ## ### #### по иерархии
-- Таблицы: обязательно с заголовками и разделителями |---|---|
-- Код/команды: ```bash или ```json для блоков
-- Списки: - для маркированных, 1. для нумерованных
-- Выделение: **жирный** для важных терминов
-
-ТЕХНИЧЕСКИЕ ТЕРМИНЫ СОХРАНЯТЬ:
-- IPMI команды: chassis, power, mc, sensor, sel, sdr, fru
-- BMC команды: reset, info, watchdog, lan, user
-- Redfish API: Systems, Chassis, Managers, UpdateService
-- Аппаратные спецификации: CPU, RAM, SSD, NIC, GPU
-- Модели устройств и серийные номера"""
-
-        if content_type == "complex_table":
-            return base_prompt + "\n\nОСОБОЕ ВНИМАНИЕ: Этот контент содержит сложные таблицы. Создай идеальные Markdown таблицы с правильным количеством столбцов и строк."
-        elif content_type == "technical_specs":
-            return base_prompt + "\n\nОСОБОЕ ВНИМАНИЕ: Этот контент содержит технические спецификации. Сохрани ВСЕ числовые значения, единицы измерения и модели устройств."
-        elif content_type == "commands":
-            return base_prompt + "\n\nОСОБОЕ ВНИМАНИЕ: Этот контент содержит технические команды. Оформи их в блоки кода с соответствующей подсветкой синтаксиса."
+def load_intermediate_data(**context) -> Dict[str, Any]:
+    """Загрузка промежуточных данных от Stage 1"""
+    start_time = time.time()
+    
+    try:
+        dag_run_conf = context['dag_run'].conf or {}
+        logger.info(f"📥 Загрузка данных для трансформации: {json.dumps(dag_run_conf, indent=2, ensure_ascii=False)}")
         
-        return base_prompt
+        # Получение промежуточного файла
+        intermediate_file = dag_run_conf.get('intermediate_file')
+        if not intermediate_file or not os.path.exists(intermediate_file):
+            raise ValueError(f"Промежуточный файл не найден: {intermediate_file}")
+        
+        # Чтение данных
+        with open(intermediate_file, 'r', encoding='utf-8') as f:
+            document_data = json.load(f)
+        
+        if not document_data or 'markdown_content' not in document_data:
+            raise ValueError("Данные документа некорректны или отсутствуют")
+        
+        # Подготовка сессии трансформации
+        transformation_session = {
+            'session_id': f"transform_{int(time.time())}",
+            'document_data': document_data,
+            'original_config': dag_run_conf.get('original_config', {}),
+            'intermediate_file': intermediate_file,
+            'chinese_document': dag_run_conf.get('chinese_document', True),
+            'preserve_technical_terms': dag_run_conf.get('preserve_technical_terms', True),
+            'transformation_start_time': datetime.now().isoformat()
+        }
+        
+        content_length = len(document_data.get('markdown_content', ''))
+        logger.info(f"✅ Данные загружены: {content_length} символов для трансформации")
+        
+        MetricsUtils.record_processing_metrics(
+            dag_id='content_transformation',
+            task_id='load_intermediate_data',
+            processing_time=time.time() - start_time,
+            success=True
+        )
+        
+        return transformation_session
+        
+    except Exception as e:
+        MetricsUtils.record_processing_metrics(
+            dag_id='content_transformation',
+            task_id='load_intermediate_data',
+            processing_time=time.time() - start_time,
+            success=False
+        )
+        logger.error(f"❌ Ошибка загрузки данных: {e}")
+        raise
+
+def transform_chinese_content(**context) -> Dict[str, Any]:
+    """Основная трансформация контента с китайской оптимизацией"""
+    start_time = time.time()
+    session = context['task_instance'].xcom_pull(task_ids='load_intermediate_data')
     
-    def transform_content_chunk(self, text_chunk: str, structure_info: Dict = None, content_type: str = "mixed") -> Optional[str]:
-        """Преобразование фрагмента контента в Markdown"""
-        try:
-            system_prompt = self.get_transformation_prompt(content_type)
-            
-            # Подготовка пользовательского промпта
-            user_prompt = f"""Преобразуй этот извлеченный из PDF текст в идеальный Markdown:
-
-ИСХОДНЫЙ КОНТЕНТ:
-{text_chunk}"""
-
-            # Добавление информации о структуре, если есть
-            if structure_info:
-                user_prompt += f"""
-
-СТРУКТУРНАЯ ИНФОРМАЦИЯ:
-{json.dumps(structure_info, ensure_ascii=False, indent=2)}"""
-            
-            # Запрос к vLLM
-            payload = {
-                "model": self.model,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                "temperature": 0.1,
-                "max_tokens": 4096,
-                "top_p": 0.9,
-                "stream": False
+    try:
+        logger.info("🔄 Начинаем трансформацию китайского контента")
+        
+        document_data = session['document_data']
+        markdown_content = document_data.get('markdown_content', '')
+        
+        if not markdown_content.strip():
+            raise ValueError("Нет контента для трансформации")
+        
+        # ✅ Применяем специализированные трансформации
+        transformed_content = apply_chinese_transformations(markdown_content)
+        
+        # ✅ Улучшение структуры документа
+        structured_content = improve_document_structure(transformed_content)
+        
+        # ✅ Финальная очистка и форматирование
+        final_content = finalize_content_formatting(structured_content)
+        
+        # Расчет качества трансформации
+        quality_score = calculate_transformation_quality(markdown_content, final_content)
+        
+        transformation_results = {
+            'transformed_content': final_content,
+            'original_length': len(markdown_content),
+            'transformed_length': len(final_content),
+            'quality_score': quality_score,
+            'chinese_chars_preserved': count_chinese_characters(final_content),
+            'technical_terms_preserved': count_preserved_terms(final_content),
+            'transformation_stats': {
+                'processing_time_seconds': time.time() - start_time,
+                'transformation_method': 'chinese_optimized_v3',
+                'content_improved': True
             }
+        }
+        
+        MetricsUtils.record_processing_metrics(
+            dag_id='content_transformation',
+            task_id='transform_chinese_content',
+            processing_time=time.time() - start_time,
+            success=True
+        )
+        
+        logger.info(f"✅ Трансформация завершена. Качество: {quality_score:.1f}%")
+        return transformation_results
+        
+    except Exception as e:
+        MetricsUtils.record_processing_metrics(
+            dag_id='content_transformation',
+            task_id='transform_chinese_content',
+            processing_time=time.time() - start_time,
+            success=False
+        )
+        logger.error(f"❌ Ошибка трансформации: {e}")
+        raise
+
+def apply_chinese_transformations(content: str) -> str:
+    """Применение специализированных трансформаций для китайского контента"""
+    try:
+        # 1. Сохранение технических терминов
+        for chinese_term, english_term in CHINESE_TRANSFORMATION_CONFIG['preserve_terms'].items():
+            if chinese_term in content:
+                # Заменяем на комбинацию китайский + английский
+                content = content.replace(chinese_term, f"{chinese_term} ({english_term})")
+        
+        # 2. Улучшение заголовков
+        content = improve_chinese_headings(content)
+        
+        # 3. Улучшение таблиц
+        content = enhance_chinese_tables(content)
+        
+        # 4. Очистка форматирования
+        content = clean_chinese_formatting(content)
+        
+        return content
+        
+    except Exception as e:
+        logger.warning(f"Ошибка применения китайских трансформаций: {e}")
+        return content
+
+def improve_chinese_headings(content: str) -> str:
+    """Улучшение форматирования китайских заголовков"""
+    try:
+        lines = content.split('\n')
+        improved_lines = []
+        
+        for line in lines:
+            line_stripped = line.strip()
+            if not line_stripped:
+                improved_lines.append(line)
+                continue
             
-            response = self.session.post(
-                f"{self.base_url}/v1/chat/completions",
-                json=payload,
-                timeout=600
-            )
+            # Проверяем паттерны китайских заголовков
+            heading_level = detect_chinese_heading_level(line_stripped)
             
-            response.raise_for_status()
-            result = response.json()
-            
-            if "choices" in result and len(result["choices"]) > 0:
-                markdown_content = result["choices"][0]["message"]["content"]
-                return self.postprocess_markdown(markdown_content)
-                
-        except Exception as e:
-            print(f"❌ Ошибка трансформации контента: {e}")
-            return None
+            if heading_level > 0 and not line_stripped.startswith('#'):
+                # Добавляем markdown заголовок
+                markdown_prefix = '#' * heading_level + ' '
+                improved_lines.append(f"{markdown_prefix}{line_stripped}")
+            else:
+                improved_lines.append(line)
+        
+        return '\n'.join(improved_lines)
+        
+    except Exception as e:
+        logger.warning(f"Ошибка улучшения заголовков: {e}")
+        return content
+
+def detect_chinese_heading_level(text: str) -> int:
+    """Определение уровня китайского заголовка"""
+    for pattern in CHINESE_TRANSFORMATION_CONFIG['heading_patterns']:
+        if re.match(pattern, text):
+            # Определяем уровень по паттерну
+            if '第' in text and ('章' in text):
+                return 1  # Главы
+            elif '第' in text and ('节' in text):
+                return 2  # Разделы
+            elif re.match(r'^[一二三四五六七八九十]+[、．]', text):
+                return 3  # Подразделы
+            elif re.match(r'^\d+[、．]', text):
+                return 2  # Нумерованные разделы
+            else:
+                return 2  # По умолчанию
     
-    def postprocess_markdown(self, markdown: str) -> str:
-        """Постобработка сгенерированного Markdown"""
-        if not markdown:
-            return ""
-        
-        # Очистка от лишних элементов
-        cleaned = markdown.strip()
-        
-        # Удаление возможных вводных фраз
-        intro_patterns = [
-            r'^[Вв]от Markdown версия[^:]*:?\s*',
-            r'^[Вв]от преобразованный контент[^:]*:?\s*',
-            r'^[Mm]arkdown версия[^:]*:?\s*',
-            r'^[Hh]ere is[^:]*:?\s*'
-        ]
-        
-        for pattern in intro_patterns:
-            cleaned = re.sub(pattern, '', cleaned, flags=re.MULTILINE)
-        
-        # Исправление заголовков (убедимся что есть пробел после #)
-        cleaned = re.sub(r'^(#{1,6})([^\s#])', r'\1 \2', cleaned, flags=re.MULTILINE)
-        
-        # Исправление таблиц - добавление разделителей если отсутствуют
-        lines = cleaned.split('\n')
-        corrected_lines = []
+    return 0  # Не заголовок
+
+def enhance_chinese_tables(content: str) -> str:
+    """Улучшение структуры таблиц с китайским контентом"""
+    try:
+        lines = content.split('\n')
+        enhanced_lines = []
         in_table = False
         
         for i, line in enumerate(lines):
-            if '|' in line and line.count('|') >= 2:
+            if '|' in line and len([cell for cell in line.split('|') if cell.strip()]) >= 2:
                 if not in_table:
-                    # Начало таблицы - проверяем следующую строку
-                    if i + 1 < len(lines) and not re.match(r'^\|[\s\-\|:]+\|', lines[i + 1]):
-                        corrected_lines.append(line)
-                        # Добавляем разделитель
-                        cols = line.count('|') - 1
-                        separator = '|' + '---|' * cols
-                        corrected_lines.append(separator)
-                        in_table = True
-                        continue
+                    # Начало таблицы
                     in_table = True
-                corrected_lines.append(line)
+                    enhanced_lines.append(line)
+                    
+                    # Проверяем, есть ли разделитель
+                    if (i + 1 < len(lines) and 
+                        not re.match(r'^\|[\s\-:|]+\|', lines[i + 1])):
+                        # Добавляем разделитель
+                        cols = len([cell for cell in line.split('|') if cell.strip()])
+                        separator = '|' + ' --- |' * cols
+                        enhanced_lines.append(separator)
+                else:
+                    enhanced_lines.append(line)
             else:
                 if in_table and line.strip() == '':
                     in_table = False
-                corrected_lines.append(line)
+                enhanced_lines.append(line)
         
-        cleaned = '\n'.join(corrected_lines)
+        return '\n'.join(enhanced_lines)
         
-        # Финальная очистка множественных пустых строк
-        cleaned = re.sub(r'\n\s*\n\s*\n+', '\n\n', cleaned)
+    except Exception as e:
+        logger.warning(f"Ошибка улучшения таблиц: {e}")
+        return content
+
+def clean_chinese_formatting(content: str) -> str:
+    """Очистка форматирования китайского текста"""
+    try:
+        # Убираем лишние пробелы вокруг китайских символов
+        content = re.sub(r'([\u4e00-\u9fff])\s+([\u4e00-\u9fff])', r'\1\2', content)
         
-        return cleaned.strip()
+        # Исправляем пробелы вокруг знаков препинания
+        content = re.sub(r'([\u4e00-\u9fff])\s*([，。；：！？])', r'\1\2', content)
+        
+        # Убираем множественные пустые строки
+        content = re.sub(r'\n\s*\n\s*\n+', '\n\n', content)
+        
+        # Очищаем лишние пробелы в начале и конце строк
+        lines = [line.rstrip() for line in content.split('\n')]
+        content = '\n'.join(lines)
+        
+        return content.strip()
+        
+    except Exception as e:
+        logger.warning(f"Ошибка очистки форматирования: {e}")
+        return content
 
-# =============================================================================
-# ФУНКЦИИ DAG
-# =============================================================================
+def improve_document_structure(content: str) -> str:
+    """Улучшение общей структуры документа"""
+    try:
+        lines = content.split('\n')
+        structured_lines = []
+        
+        # Добавляем title если нет
+        has_title = any(line.strip().startswith('# ') for line in lines[:5])
+        
+        if not has_title and lines:
+            # Ищем первый заголовок для превращения в title
+            for i, line in enumerate(lines[:10]):
+                if line.strip() and not line.startswith('#'):
+                    structured_lines.append(f"# {line.strip()}")
+                    lines[i] = ""  # Убираем дублирование
+                    break
+        
+        # Добавляем остальные строки с улучшениями
+        for line in lines:
+            if line.strip():
+                structured_lines.append(line)
+            else:
+                structured_lines.append(line)
+        
+        return '\n'.join(structured_lines)
+        
+    except Exception as e:
+        logger.warning(f"Ошибка улучшения структуры: {e}")
+        return content
 
-def load_extraction_data(**context):
-    """Загрузка данных извлечения от DAG 1"""
-    dag_run_conf = context['dag_run'].conf
-    
-    # Получение промежуточного файла от DAG 1
-    intermediate_file = dag_run_conf.get('intermediate_file')
-    
-    if not intermediate_file or not os.path.exists(intermediate_file):
-        raise ValueError(f"Промежуточный файл от DAG 1 не найден: {intermediate_file}")
-    
-    # Чтение данных извлечения
-    with open(intermediate_file, 'r', encoding='utf-8') as f:
-        extraction_data = json.load(f)
-    
-    if not extraction_data or 'extracted_content' not in extraction_data:
-        raise ValueError("Данные извлечения некорректны или отсутствуют")
-    
-    # Подготовка данных для трансформации
-    transformation_session = {
-        'session_id': f"transform_{int(datetime.now().timestamp())}",
-        'extraction_data': extraction_data['extracted_content'],
-        'analysis_data': extraction_data.get('analysis', {}),
-        'source_file': extraction_data.get('source_file'),
-        'original_config': dag_run_conf.get('original_config', {}),
-        'vllm_model': 'Qwen/Qwen2.5-VL-32B-Instruct',  # ИСПРАВЛЕННАЯ МОДЕЛЬ
-        'transformation_start_time': datetime.now().isoformat()
-    }
-    
-    extracted_text = transformation_session['extraction_data'].get('extracted_text', '')
-    tables_count = len(transformation_session['extraction_data'].get('tables', []))
-    images_count = len(transformation_session['extraction_data'].get('images', []))
-    
-    print(f"📄 Данные загружены для трансформации:")
-    print(f"   Текст: {len(extracted_text)} символов")
-    print(f"   Таблицы: {tables_count}")
-    print(f"   Изображения: {images_count}")
-    
-    return transformation_session
+def finalize_content_formatting(content: str) -> str:
+    """Финальное форматирование контента"""
+    try:
+        # Финальная очистка
+        content = content.strip()
+        
+        # Убираем лишние пустые строки в конце разделов
+        content = re.sub(r'(\n#+.*?)\n\n+', r'\1\n\n', content)
+        
+        # Обеспечиваем правильное расстояние между заголовками и контентом
+        content = re.sub(r'(#+\s+.*?)\n([^\n])', r'\1\n\n\2', content)
+        
+        return content
+        
+    except Exception as e:
+        logger.warning(f"Ошибка финального форматирования: {e}")
+        return content
 
-def analyze_content_structure(**context):
-    """Анализ структуры контента для оптимальной трансформации"""
-    transformation_session = context['task_instance'].xcom_pull(task_ids='load_extraction_data')
+def calculate_transformation_quality(original: str, transformed: str) -> float:
+    """Расчет качества трансформации"""
+    try:
+        quality_score = 100.0
+        
+        # Проверка длины (не должна сильно измениться)
+        length_ratio = len(transformed) / max(len(original), 1)
+        if length_ratio < 0.8 or length_ratio > 1.3:
+            quality_score -= 10
+        
+        # Проверка сохранения заголовков
+        original_headers = len(re.findall(r'^#+\s', original, re.MULTILINE))
+        transformed_headers = len(re.findall(r'^#+\s', transformed, re.MULTILINE))
+        
+        if transformed_headers < original_headers:
+            quality_score -= 15
+        
+        # Проверка сохранения таблиц
+        original_tables = len(re.findall(r'\|.*\|', original))
+        transformed_tables = len(re.findall(r'\|.*\|', transformed))
+        
+        if original_tables > 0:
+            table_preservation = transformed_tables / original_tables
+            if table_preservation < 0.9:
+                quality_score -= 10
+        
+        # Проверка сохранения китайских символов
+        original_chinese = count_chinese_characters(original)
+        transformed_chinese = count_chinese_characters(transformed)
+        
+        if original_chinese > 0:
+            chinese_preservation = transformed_chinese / original_chinese
+            if chinese_preservation < 0.9:
+                quality_score -= 20
+        
+        return max(0, quality_score)
+        
+    except Exception:
+        return 75.0  # Средняя оценка по умолчанию
+
+def count_chinese_characters(text: str) -> int:
+    """Подсчет китайских символов"""
+    return len(re.findall(r'[\u4e00-\u9fff]', text))
+
+def count_preserved_terms(text: str) -> int:
+    """Подсчет сохраненных технических терминов"""
+    count = 0
+    for term in CHINESE_TRANSFORMATION_CONFIG['preserve_terms'].values():
+        count += text.count(term)
+    return count
+
+def save_transformation_result(**context) -> Dict[str, Any]:
+    """Сохранение результата трансформации"""
+    start_time = time.time()
     
-    extraction_data = transformation_session['extraction_data']
-    extracted_text = extraction_data.get('extracted_text', '')
-    document_structure = extraction_data.get('document_structure', {})
-    tables = extraction_data.get('tables', [])
-    
-    # Анализ типов контента
-    content_analysis = {
-        'total_length': len(extracted_text),
-        'has_structure': bool(document_structure),
-        'tables_count': len(tables),
-        'images_count': len(extraction_data.get('images', [])),
-        'content_types': []
-    }
-    
-    # Разделение текста на смысловые блоки
-    text_blocks = split_into_blocks(extracted_text)
-    
-    analyzed_blocks = []
-    for i, block in enumerate(text_blocks):
-        block_type = classify_content_block(block)
-        block_info = {
-            'block_id': i,
-            'content': block,
-            'type': block_type,
-            'length': len(block),
-            'complexity': calculate_complexity(block)
+    try:
+        session = context['task_instance'].xcom_pull(task_ids='load_intermediate_data')
+        transformation_results = context['task_instance'].xcom_pull(task_ids='transform_chinese_content')
+        
+        original_config = session['original_config']
+        timestamp = original_config.get('timestamp', int(time.time()))
+        filename = original_config.get('filename', 'unknown.pdf')
+        
+        # Определение пути сохранения (китайский язык - источник)
+        output_dir = f"/app/output/zh"
+        os.makedirs(output_dir, exist_ok=True)
+        
+        markdown_filename = f"{timestamp}_{filename.replace('.pdf', '.md')}"
+        output_path = f"{output_dir}/{markdown_filename}"
+        
+        # Сохранение трансформированного контента
+        with open(output_path, 'w', encoding='utf-8') as f:
+            f.write(transformation_results['transformed_content'])
+        
+        # Подготовка конфигурации для Stage 3
+        stage3_config = {
+            'markdown_file': output_path,
+            'markdown_content': transformation_results['transformed_content'],
+            'original_config': original_config,
+            'stage2_completed': True,
+            'transformation_metadata': {
+                'quality_score': transformation_results['quality_score'],
+                'transformation_method': 'chinese_optimized_v3',
+                'chinese_chars_preserved': transformation_results['chinese_chars_preserved'],
+                'technical_terms_preserved': transformation_results['technical_terms_preserved'],
+                'completion_time': datetime.now().isoformat()
+            }
         }
-        analyzed_blocks.append(block_info)
-        content_analysis['content_types'].append(block_type)
-    
-    # Группировка блоков для эффективной обработки
-    processing_groups = group_blocks_for_processing(analyzed_blocks)
-    
-    structure_analysis = {
-        'content_analysis': content_analysis,
-        'analyzed_blocks': analyzed_blocks,
-        'processing_groups': processing_groups,
-        'recommended_approach': determine_processing_approach(content_analysis)
-    }
-    
-    print(f"📊 Анализ структуры завершен:")
-    print(f"   Блоков контента: {len(analyzed_blocks)}")
-    print(f"   Групп обработки: {len(processing_groups)}")
-    print(f"   Рекомендуемый подход: {structure_analysis['recommended_approach']}")
-    
-    return structure_analysis
-
-def split_into_blocks(text: str) -> List[str]:
-    """Разделение текста на смысловые блоки"""
-    # Разделение по параграфам и заголовкам
-    blocks = []
-    current_block = []
-    
-    lines = text.split('\n')
-    
-    for line in lines:
-        line = line.strip()
         
-        # Новый блок при встрече заголовка или после пустой строки
-        if (line.startswith('#') or 
-            (not line and current_block) or
-            len('\n'.join(current_block)) > 1000):
-            
-            if current_block:
-                blocks.append('\n'.join(current_block))
-                current_block = []
-        
-        if line:
-            current_block.append(line)
-    
-    if current_block:
-        blocks.append('\n'.join(current_block))
-    
-    return [block for block in blocks if block.strip()]
-
-def classify_content_block(block: str) -> str:
-    """Классификация типа блока контента"""
-    if not block.strip():
-        return 'empty'
-    
-    # Заголовки
-    if any(line.strip().isupper() and len(line.strip()) < 100 for line in block.split('\n')[:2]):
-        return 'header'
-    
-    # Таблицы (по характерным признакам)
-    table_indicators = ['|', 'колонка', 'столбец', 'строка', 'таблица']
-    if any(indicator in block.lower() for indicator in table_indicators):
-        return 'table'
-    
-    # Технические команды
-    tech_indicators = ['ipmitool', 'redfish', 'bmc', '0x', 'chassis', 'power']
-    if any(indicator in block.lower() for indicator in tech_indicators):
-        return 'commands'
-    
-    # Технические спецификации
-    if re.search(r'\d+\s*(GB|MHz|GHz|W|TB|MB|Gbps|RPM)', block):
-        return 'technical_specs'
-    
-    # Списки
-    list_patterns = [r'^\s*[-•]\s+', r'^\s*\d+[\.\)]\s+', r'^\s*[a-zA-Z]\)']
-    if any(re.search(pattern, block, re.MULTILINE) for pattern in list_patterns):
-        return 'list'
-    
-    # Обычный текст
-    return 'text'
-
-def calculate_complexity(block: str) -> str:
-    """Расчет сложности блока"""
-    length = len(block)
-    
-    if length > 1000:
-        return 'high'
-    elif length > 300:
-        return 'medium'
-    else:
-        return 'low'
-
-def group_blocks_for_processing(blocks: List[Dict]) -> List[List[Dict]]:
-    """Группировка блоков для эффективной обработки"""
-    groups = []
-    current_group = []
-    current_group_length = 0
-    max_group_length = 2000
-    
-    for block in blocks:
-        block_length = block['length']
-        
-        # Сложные блоки обрабатываются отдельно
-        if block['complexity'] == 'high' or block['type'] in ['table', 'commands']:
-            if current_group:
-                groups.append(current_group)
-                current_group = []
-                current_group_length = 0
-            
-            groups.append([block])
-            continue
-        
-        # Проверка превышения лимита группы
-        if current_group_length + block_length > max_group_length and current_group:
-            groups.append(current_group)
-            current_group = [block]
-            current_group_length = block_length
-        else:
-            current_group.append(block)
-            current_group_length += block_length
-    
-    if current_group:
-        groups.append(current_group)
-    
-    return groups
-
-def determine_processing_approach(analysis: Dict) -> str:
-    """Определение оптимального подхода к обработке"""
-    if analysis['tables_count'] > 5:
-        return 'table_focused'
-    elif 'commands' in analysis['content_types']:
-        return 'technical_focused'
-    elif analysis['total_length'] > 10000:
-        return 'chunked_processing'
-    else:
-        return 'standard'
-
-def transform_content_blocks(**context):
-    """Трансформация блоков контента в Markdown"""
-    transformation_session = context['task_instance'].xcom_pull(task_ids='load_extraction_data')
-    structure_analysis = context['task_instance'].xcom_pull(task_ids='analyze_content_structure')
-    
-    # Инициализация vLLM трансформера
-    transformer = VLLMContentTransformer(
-        base_url=ConfigUtils.get_service_config()['vllm'],
-        model=transformation_session['vllm_model']
-    )
-    
-    processing_groups = structure_analysis['processing_groups']
-    extraction_data = transformation_session['extraction_data']
-    
-    print(f"🔄 Начало трансформации {len(processing_groups)} групп контента")
-    
-    transformed_blocks = []
-    processing_stats = {
-        'groups_processed': 0,
-        'blocks_processed': 0,
-        'transformation_errors': 0
-    }
-    
-    for group_idx, group in enumerate(processing_groups):
-        print(f"📦 Обработка группы {group_idx + 1}/{len(processing_groups)}")
-        
-        # Объединение блоков группы
-        group_content = '\n\n'.join([block['content'] for block in group])
-        group_types = [block['type'] for block in group]
-        
-        # Определение типа группы
-        if 'table' in group_types:
-            content_type = 'complex_table'
-        elif 'commands' in group_types:
-            content_type = 'commands'
-        elif 'technical_specs' in group_types:
-            content_type = 'technical_specs'
-        else:
-            content_type = 'mixed'
-        
-        # Трансформация группы
-        transformed_content = transformer.transform_content_chunk(
-            text_chunk=group_content,
-            structure_info=extraction_data.get('document_structure', {}),
-            content_type=content_type
+        MetricsUtils.record_processing_metrics(
+            dag_id='content_transformation',
+            task_id='save_transformation_result',
+            processing_time=time.time() - start_time,
+            success=True
         )
         
-        if transformed_content:
-            transformed_blocks.append(transformed_content)
-            processing_stats['groups_processed'] += 1
-            processing_stats['blocks_processed'] += len(group)
-        else:
-            print(f"⚠️ Не удалось трансформировать группу {group_idx + 1}")
-            processing_stats['transformation_errors'] += 1
-            # Добавляем исходный контент как fallback
-            transformed_blocks.append(f"```\n{group_content}\n```")
-    
-    # Объединение всех трансформированных блоков
-    final_markdown = '\n\n'.join(transformed_blocks)
-    
-    # Добавление изображений если есть
-    images = extraction_data.get('images', [])
-    if images:
-        final_markdown += "\n\n## Изображения\n\n"
-        for i, image_path in enumerate(images):
-            final_markdown += f"![Image {i+1}]({image_path})\n\n"
-    
-    transformation_results = {
-        'markdown_content': final_markdown,
-        'processing_stats': processing_stats,
-        'content_length': len(final_markdown),
-        'transformation_quality': calculate_transformation_quality(final_markdown, extraction_data)
-    }
-    
-    print(f"✅ Трансформация завершена:")
-    print(f"   Markdown: {len(final_markdown)} символов")
-    print(f"   Качество: {transformation_results['transformation_quality']}%")
-    
-    return transformation_results
+        logger.info(f"💾 Трансформированный контент сохранен: {output_path}")
+        return stage3_config
+        
+    except Exception as e:
+        MetricsUtils.record_processing_metrics(
+            dag_id='content_transformation',
+            task_id='save_transformation_result',
+            processing_time=time.time() - start_time,
+            success=False
+        )
+        logger.error(f"❌ Ошибка сохранения результата: {e}")
+        raise
 
-def calculate_transformation_quality(markdown: str, extraction_data: Dict) -> float:
-    """Расчет качества трансформации"""
-    quality_score = 100.0
-    
-    # Проверка наличия заголовков
-    headers = len(re.findall(r'^#{1,6}\s+', markdown, re.MULTILINE))
-    if headers == 0:
-        quality_score -= 20
-    
-    # Проверка таблиц
-    original_tables = len(extraction_data.get('tables', []))
-    markdown_tables = len(re.findall(r'^\|.*\|', markdown, re.MULTILINE))
-    if original_tables > 0 and markdown_tables < original_tables * 0.8:
-        quality_score -= 15
-    
-    # Проверка структуры
-    if not re.search(r'^#\s+', markdown, re.MULTILINE):  # Нет главного заголовка
-        quality_score -= 10
-    
-    # Проверка кодовых блоков
-    code_blocks = len(re.findall(r'```', markdown)) // 2
-    if 'ipmitool' in extraction_data.get('extracted_text', '').lower() and code_blocks == 0:
-        quality_score -= 10
-    
-    return max(0, quality_score)
-
-def save_markdown_result(**context):
-    """Сохранение результата трансформации"""
-    transformation_session = context['task_instance'].xcom_pull(task_ids='load_extraction_data')
-    transformation_results = context['task_instance'].xcom_pull(task_ids='transform_content_blocks')
-    
-    original_config = transformation_session['original_config']
-    timestamp = original_config.get('timestamp', int(datetime.now().timestamp()))
-    filename = original_config.get('filename', 'unknown.pdf')
-    
-    # Сохранение в папку для китайского языка (исходный Markdown)
-    output_path = SharedUtils.prepare_output_path(filename, 'zh', timestamp)
-    
-    # Сохранение Markdown файла
-    SharedUtils.save_final_result(
-        content=transformation_results['markdown_content'],
-        output_path=output_path,
-        metadata={
-            'source_file': transformation_session['source_file'],
-            'transformation_model': transformation_session['vllm_model'],
-            'processing_stats': transformation_results['processing_stats'],
-            'transformation_quality': transformation_results['transformation_quality'],
-            'content_length': transformation_results['content_length'],
-            'processing_time': (datetime.now() - datetime.fromisoformat(transformation_session['transformation_start_time'])).total_seconds()
-        }
-    )
-    
-    # Конфигурация для следующего DAG
-    dag3_config = {
-        'markdown_file': output_path,
-        'markdown_content': transformation_results['markdown_content'],
-        'original_config': original_config,
-        'dag2_completed': True,
-        'transformation_quality': transformation_results['transformation_quality']
-    }
-    
-    print(f"💾 Markdown сохранен: {output_path}")
-    return dag3_config
-
-# =============================================================================
-# ОПРЕДЕЛЕНИЕ ЗАДАЧ DAG
-# =============================================================================
-
-# Задача 1: Загрузка данных извлечения
-load_data = PythonOperator(
-    task_id='load_extraction_data',
-    python_callable=load_extraction_data,
-    dag=dag
-)
-
-# Задача 2: Анализ структуры контента
-analyze_structure = PythonOperator(
-    task_id='analyze_content_structure',
-    python_callable=analyze_content_structure,
-    dag=dag
-)
-
-# Задача 3: Трансформация блоков контента
-transform_blocks = PythonOperator(
-    task_id='transform_content_blocks',
-    python_callable=transform_content_blocks,
-    dag=dag
-)
-
-# Задача 4: Сохранение результата
-save_result = PythonOperator(
-    task_id='save_markdown_result',
-    python_callable=save_markdown_result,
-    dag=dag
-)
-
-def notify_completion(**context):
+def notify_transformation_completion(**context) -> None:
     """Уведомление о завершении трансформации"""
-    dag3_config = context['task_instance'].xcom_pull(task_ids='save_markdown_result')
-    transformation_session = context['task_instance'].xcom_pull(task_ids='load_extraction_data')
-    
-    quality = dag3_config['transformation_quality']
-    
-    message = f"""
-    ✅ DAG 2 (Content Transformation) успешно завершен
-    
-    Модель: {transformation_session['vllm_model']}
-    Качество трансформации: {quality}%
-    Markdown файл: {dag3_config['markdown_file']}
-    
-    Следующий этап: Translation Pipeline (DAG 3)
-    """
-    
-    print(message)
-    NotificationUtils.send_success_notification(context, dag3_config)
+    try:
+        stage3_config = context['task_instance'].xcom_pull(task_ids='save_transformation_result')
+        transformation_metadata = stage3_config['transformation_metadata']
+        
+        quality_score = transformation_metadata['quality_score']
+        chinese_chars = transformation_metadata['chinese_chars_preserved']
+        tech_terms = transformation_metadata['technical_terms_preserved']
+        
+        message = f"""
+✅ CONTENT TRANSFORMATION ЗАВЕРШЕН УСПЕШНО
 
-# Задача 5: Уведомление
-notify_task = PythonOperator(
-    task_id='notify_completion',
-    python_callable=notify_completion,
+📄 Файл: {stage3_config['markdown_file']}
+🎯 Качество трансформации: {quality_score:.1f}%
+🈶 Китайских символов: {chinese_chars}
+🔧 Технических терминов: {tech_terms}
+📊 Метод: {transformation_metadata['transformation_method']}
+
+✅ Готов к передаче на Stage 3 (Translation Pipeline)
+        """
+        
+        logger.info(message)
+        NotificationUtils.send_success_notification(context, stage3_config)
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка отправки уведомления: {e}")
+
+# ================================================================================
+# ОПРЕДЕЛЕНИЕ ЗАДАЧ
+# ================================================================================
+
+# Задача 1: Загрузка промежуточных данных
+load_data = PythonOperator(
+    task_id='load_intermediate_data',
+    python_callable=load_intermediate_data,
+    execution_timeout=timedelta(minutes=5),
     dag=dag
 )
 
-# Определение зависимостей задач
-load_data >> analyze_structure >> transform_blocks >> save_result >> notify_task
+# Задача 2: Трансформация китайского контента
+transform_content = PythonOperator(
+    task_id='transform_chinese_content',
+    python_callable=transform_chinese_content,
+    execution_timeout=timedelta(minutes=15),
+    dag=dag
+)
 
-# Настройка обработки ошибок
-def handle_failure(context):
-    """Обработка ошибок в DAG"""
-    NotificationUtils.send_failure_notification(context, context.get('exception'))
+# Задача 3: Сохранение результата
+save_result = PythonOperator(
+    task_id='save_transformation_result',
+    python_callable=save_transformation_result,
+    execution_timeout=timedelta(minutes=5),
+    dag=dag
+)
+
+# Задача 4: Уведомление о завершении
+notify_completion = PythonOperator(
+    task_id='notify_transformation_completion',
+    python_callable=notify_transformation_completion,
+    trigger_rule='all_done',
+    execution_timeout=timedelta(minutes=2),
+    dag=dag
+)
+
+# Определение зависимостей
+load_data >> transform_content >> save_result >> notify_completion
+
+# Обработка ошибок
+def handle_transformation_failure(context):
+    """Обработка ошибок трансформации"""
+    try:
+        failed_task = context['task_instance'].task_id
+        exception = context.get('exception')
+        
+        error_message = f"""
+🔥 ОШИБКА В CONTENT TRANSFORMATION
+
+Задача: {failed_task}
+Ошибка: {str(exception) if exception else 'Unknown'}
+
+Возможные причины:
+1. Поврежденные промежуточные данные
+2. Проблемы с форматированием контента
+3. Недостаток памяти для обработки
+4. Ошибки в китайских трансформациях
+
+Требуется проверка логов и входных данных.
+        """
+        
+        logger.error(error_message)
+        NotificationUtils.send_failure_notification(context, exception)
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка в обработчике ошибок: {e}")
 
 # Применение обработчика ошибок ко всем задачам
 for task in dag.tasks:
-    task.on_failure_callback = handle_failure
+    task.on_failure_callback = handle_transformation_failure

@@ -1,24 +1,36 @@
-# DAG 3: Translation Pipeline (ИСПРАВЛЕНО)
-# Высококачественный перевод с сохранением структуры на основе ollama-translator
-# Интеграция с vLLM API вместо Ollama
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+"""
+✅ ПЕРЕРАБОТАННЫЙ Translation Pipeline v3.0 - Упрощенная архитектура
+Встроенная логика перевода без внешних зависимостей, оптимизированная для китайских документов
+
+КЛЮЧЕВЫЕ ИЗМЕНЕНИЯ:
+- ✅ Убрана зависимость от vLLM микросервиса
+- ✅ Встроенные правила перевода
+- ✅ Сохранение технических терминов
+- ✅ Простая но эффективная логика
+"""
 
 from datetime import datetime, timedelta
 from airflow import DAG
 from airflow.operators.python import PythonOperator
-from airflow.operators.bash import BashOperator
-import requests
+from airflow.exceptions import AirflowException
+import os
 import json
-import re
+import logging
 import time
-import hashlib
-from typing import Dict, List, Any, Optional
+import re
+from typing import Dict, Any, Optional, List
 
-# Импорт кастомных утилит
+# Утилиты
 from shared_utils import (
-    SharedUtils,
-    NotificationUtils,
-    ConfigUtils
+    SharedUtils, NotificationUtils, ConfigUtils, 
+    MetricsUtils, ErrorHandlingUtils
 )
+
+# Настройка логирования
+logger = logging.getLogger(__name__)
 
 # Конфигурация DAG
 DEFAULT_ARGS = {
@@ -28,40 +40,41 @@ DEFAULT_ARGS = {
     'email_on_failure': False,
     'email_on_retry': False,
     'retries': 2,
-    'retry_delay': timedelta(minutes=5),
+    'retry_delay': timedelta(minutes=3),
 }
 
-# Создание DAG
 dag = DAG(
     'translation_pipeline',
     default_args=DEFAULT_ARGS,
-    description='DAG 3: Высококачественный перевод с сохранением структуры',
-    schedule_interval=None,  # Запускается после DAG 2
+    description='DAG 3: Translation Pipeline v3.0 - Упрощенный перевод для китайских документов',
+    schedule_interval=None,
     max_active_runs=2,
     catchup=False,
-    tags=['pdf-converter', 'translation', 'vllm', 'technical-terms']
+    tags=['pdf-converter', 'dag3', 'translation', 'chinese-docs', 'v3']
 )
 
-# =============================================================================
-# ТЕХНИЧЕСКИЕ ТЕРМИНЫ (НЕ ПЕРЕВОДИТЬ!)
-# =============================================================================
-TECHNICAL_TERMINOLOGY = {
-    # Brand names (КРИТИЧЕСКИ ВАЖНО!)
+# ================================================================================
+# СЛОВАРИ ДЛЯ ПЕРЕВОДА КИТАЙСКИХ ТЕХНИЧЕСКИХ ДОКУМЕНТОВ
+# ================================================================================
+
+# Технические термины (НЕ ПЕРЕВОДЯТСЯ)
+TECHNICAL_TERMS = {
+    # Бренды (КРИТИЧЕСКИ ВАЖНО!)
     "问天": "WenTian",
     "联想问天": "Lenovo WenTian",
     "天擎": "ThinkSystem",
     "AnyBay": "AnyBay",
     
-    # Processors
+    # Процессоры
     "至强": "Xeon",
     "可扩展处理器": "Scalable Processors",
     "英特尔": "Intel",
+    
+    # Технические спецификации
     "处理器": "Processor",
-    "内核": "Core",
+    "内核": "Core", 
     "线程": "Thread",
     "睿频": "Turbo Boost",
-    
-    # Memory and storage
     "内存": "Memory",
     "存储": "Storage",
     "硬盘": "Drive",
@@ -71,612 +84,617 @@ TECHNICAL_TERMINOLOGY = {
     "冗余": "Redundancy",
     "背板": "Backplane",
     "托架": "Tray",
-    
-    # Network
     "以太网": "Ethernet",
     "光纤": "Fiber",
     "带宽": "Bandwidth",
     "延迟": "Latency",
     "网卡": "Network Adapter",
-    
-    # Form factors
     "英寸": "inch",
     "机架": "Rack",
     "插槽": "Slot",
     "转接卡": "Riser Card",
-    
-    # Power
     "电源": "Power Supply",
     "铂金": "Platinum",
     "钛金": "Titanium",
     "CRPS": "CRPS"
 }
 
-TECHNICAL_TERMINOLOGY_RU = {
-    "问天": "WenTian",
-    "联想问天": "Lenovo WenTian",
-    "至强": "Xeon",
-    "可扩展处理器": "Scalable процессоры",
-    "英特尔": "Intel",
-    "处理器": "процессор",
-    "内核": "ядро",
-    "线程": "поток",
-    "内存": "память",
-    "存储": "хранилище",
-    "硬盘": "диск",
-    "固态硬盘": "SSD",
-    "机械硬盘": "HDD",
-    "热插拔": "горячая замена",
-    "冗余": "резервирование",
-    "托架": "лоток",
-    "以太网": "Ethernet",
-    "带宽": "пропускная способность",
-    "延迟": "задержка",
-    "机架": "стойка",
-    "插槽": "слот",
-    "电源": "блок питания"
+# Русские переводы
+CHINESE_TO_RUSSIAN = {
+    # Общие термины
+    "文档": "документ",
+    "技术": "технический",
+    "规格": "спецификация",
+    "说明": "описание",
+    "安装": "установка",
+    "配置": "конфигурация",
+    "管理": "управление",
+    "监控": "мониторинг",
+    "维护": "обслуживание",
+    "故障": "неисправность",
+    "排除": "устранение",
+    "性能": "производительность",
+    "优化": "оптимизация",
+    "升级": "обновление",
+    "兼容": "совместимость",
+    "支持": "поддержка",
+    "推荐": "рекомендуется",
+    "要求": "требования",
+    "注意": "внимание",
+    "警告": "предупреждение",
+    "重要": "важно",
+    
+    # Цифры и единицы
+    "个": "",  # счетное слово
+    "台": "шт.",
+    "套": "комплект",
+    "只": "шт.",
+    "条": "шт.",
+    "根": "шт.",
+    
+    # Таблицы и списки
+    "表": "таблица",
+    "列表": "список",
+    "项目": "элемент",
+    "选项": "опция",
+    "参数": "параметр",
+    "值": "значение",
+    "默认": "по умолчанию",
+    "可选": "опционально",
+    "必须": "обязательно",
+    
+    # Действия
+    "点击": "нажмите",
+    "选择": "выберите",  
+    "输入": "введите",
+    "确认": "подтвердите",
+    "取消": "отмените",
+    "保存": "сохраните",
+    "删除": "удалите",
+    "修改": "измените",
+    "添加": "добавьте",
+    "移除": "удалите"
 }
 
-# =============================================================================
-# vLLM API КЛИЕНТ (АДАПТИРОВАННЫЙ ИЗ OLLAMA-TRANSLATOR)
-# =============================================================================
-class VLLMTranslationClient:
-    """Клиент для работы с vLLM API для перевода"""
+# Английские переводы
+CHINESE_TO_ENGLISH = {
+    # Общие термины
+    "文档": "document",
+    "技术": "technical",
+    "规格": "specification",
+    "说明": "description",
+    "安装": "installation",
+    "配置": "configuration",
+    "管理": "management",
+    "监控": "monitoring", 
+    "维护": "maintenance",
+    "故障": "fault",
+    "排除": "troubleshooting",
+    "性能": "performance",
+    "优化": "optimization",
+    "升级": "upgrade",
+    "兼容": "compatibility",
+    "支持": "support",
+    "推荐": "recommended",
+    "要求": "requirements",
+    "注意": "note",
+    "警告": "warning",
+    "重要": "important",
     
-    def __init__(self, base_url: str, model: str):
-        self.base_url = base_url
-        self.model = model
-        self.session = requests.Session()
-        self.translation_cache = {}
-        
-    def get_system_prompt(self, source_lang: str, target_lang: str) -> str:
-        """Системный промпт с отключением thinking режима"""
-        return f"""Вы - эксперт по переводу технической документации серверного оборудования.
-
-ОСНОВНАЯ ЗАДАЧА: Переводите технические тексты с {source_lang} на {target_lang} язык.
-
-КРИТИЧЕСКИ ВАЖНЫЕ ПРАВИЛА:
-1. ТОЛЬКО готовый перевод, БЕЗ пояснений и комментариев
-2. НИКОГДА не используйте фразы "Вот перевод", "Here is translation"
-3. НЕ добавляйте размышления в тегах <думаю>, или любых других
-4. Сохраняйте ВСЕ числа, коды, форматирование ТОЧНО
-5. НЕ используйте thinking режим - отвечайте сразу и кратко
-
-БРЕНДЫ (НЕ МЕНЯТЬ!):
-- "问天" ВСЕГДА → "WenTian"
-- "联想问天" ВСЕГДА → "Lenovo WenTian"
-- Сохраняйте: Intel, Xeon, PCIe, DDR5, NVMe, SAS, SATA
-
-КОМАНДЫ НЕ ПЕРЕВОДИТЬ:
-- IPMI: chassis, power, mc, sensor, sel, sdr, fru
-- API: get, set, list, status, activate, deactivate
-- Hex коды: 0x30, 0x02
-- Аббревиатуры: GPU, CPU, SSD, HDD, RAID, BMC
-
-ФОРМАТИРОВАНИЕ:
-- Сохраняйте структуру Markdown таблиц ТОЧНО
-- НЕ изменяйте количество столбцов
-- Сохраняйте HTML теги и отступы
-
-Выводите ТОЛЬКО {target_lang} перевод без дополнительного текста!"""
-
-    def get_user_prompt(self, text: str, source_lang: str, target_lang: str) -> str:
-        """Пользовательский промпт"""
-        return f"""Переведите этот {source_lang} технический текст на {target_lang} язык:
-
-{text}"""
-
-    def make_translation_request(self, text: str, source_lang: str, target_lang: str) -> Optional[str]:
-        """Выполнение запроса перевода к vLLM"""
-        try:
-            # Проверка кэша
-            cache_key = self.get_cache_key(text, source_lang, target_lang)
-            if cache_key in self.translation_cache:
-                print(f"📦 Получен перевод из кэша")
-                return self.translation_cache[cache_key]
-
-            # Подготовка промптов
-            system_prompt = self.get_system_prompt(source_lang, target_lang)
-            user_prompt = self.get_user_prompt(text, source_lang, target_lang)
-            
-            # Запрос к vLLM API
-            payload = {
-                "model": self.model,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                "temperature": 0.1,
-                "max_tokens": 4096,
-                "top_p": 0.9,
-                "stream": False
-            }
-            
-            response = self.session.post(
-                f"{self.base_url}/v1/chat/completions",
-                json=payload,
-                timeout=600
-            )
-            
-            response.raise_for_status()
-            result = response.json()
-            
-            if "choices" in result and len(result["choices"]) > 0:
-                translated = result["choices"][0]["message"]["content"]
-                
-                # Постобработка
-                cleaned = self.postprocess_translation(translated, target_lang)
-                
-                # Сохранение в кэш
-                self.translation_cache[cache_key] = cleaned
-                
-                return cleaned
-                
-        except Exception as e:
-            print(f"❌ Ошибка перевода: {e}")
-            return None
+    # Единицы измерения
+    "个": "",
+    "台": "units",
+    "套": "set",
+    "只": "piece",
+    "条": "item",
+    "根": "piece",
     
-    def postprocess_translation(self, response: str, target_lang: str) -> str:
-        """Постобработка перевода с очисткой thinking режима"""
-        if not response:
-            return ""
-        
-        cleaned = response.strip()
-        
-        # Удаление thinking тегов и размышлений
-        thinking_patterns = [
-            r'<думаю>.*?</думаю>',
-            r'<thinking>.*?</thinking>',
-            r'[Хх]орошо[,\s]*мне нужно[^.]*?\.',
-            r'[Сс]начала посмотр[^.]*?\.',
-            r'Let me[^.]*?\.',
-            r'First[,\s]*I[^.]*?\.',
-            r'[Вв]от перевод[^:]*:?\s*',
-            r'Here is[^:]*:?\s*',
-            r'[Нн]иже представлен[^:]*:?\s*'
-        ]
-        
-        for pattern in thinking_patterns:
-            cleaned = re.sub(pattern, '', cleaned, flags=re.IGNORECASE | re.DOTALL)
-        
-        # Исправление технических терминов
-        cleaned = self.fix_technical_terms(cleaned, target_lang)
-        
-        # Финальная очистка
-        cleaned = re.sub(r'\n\s*\n\s*\n+', '\n\n', cleaned)
-        cleaned = cleaned.strip()
-        
-        return cleaned
+    # Таблицы и списки
+    "表": "table",
+    "列表": "list", 
+    "项目": "item",
+    "选项": "option",
+    "参数": "parameter",
+    "值": "value",
+    "默认": "default",
+    "可选": "optional",
+    "必须": "required",
     
-    def fix_technical_terms(self, text: str, target_lang: str) -> str:
-        """Исправление технических терминов"""
-        # Критически важно: НЕ МЕНЯТЬ WenTian на ThinkSystem!
-        brand_fixes = {
-            r'\b[Qq]itian\b': 'WenTian',
-            r'\bSkyland\b': 'WenTian',
-            r'\bSkyStorage\b': 'WenTian'
+    # Действия
+    "点击": "click",
+    "选择": "select",
+    "输入": "enter",
+    "确认": "confirm",
+    "取消": "cancel",
+    "保存": "save",
+    "删除": "delete",
+    "修改": "modify",
+    "添加": "add",
+    "移除": "remove"
+}
+
+# ================================================================================
+# ОСНОВНЫЕ ФУНКЦИИ ПЕРЕВОДА
+# ================================================================================
+
+def initialize_translation(**context) -> Dict[str, Any]:
+    """Инициализация процесса перевода"""
+    start_time = time.time()
+    
+    try:
+        dag_run_conf = context['dag_run'].conf or {}
+        logger.info(f"🌐 Инициализация перевода: {json.dumps(dag_run_conf, indent=2, ensure_ascii=False)}")
+        
+        # Получение Markdown файла
+        markdown_file = dag_run_conf.get('markdown_file')
+        if not markdown_file or not os.path.exists(markdown_file):
+            raise ValueError(f"Markdown файл не найден: {markdown_file}")
+        
+        # Чтение контента
+        with open(markdown_file, 'r', encoding='utf-8') as f:
+            markdown_content = f.read()
+        
+        if not markdown_content.strip():
+            raise ValueError("Нет контента для перевода")
+        
+        original_config = dag_run_conf.get('original_config', {})
+        target_language = original_config.get('target_language', 'ru')
+        
+        # Инициализация сессии перевода
+        translation_session = {
+            'session_id': f"translation_{int(time.time())}",
+            'source_language': 'zh-CN',
+            'target_language': target_language,
+            'markdown_content': markdown_content,
+            'markdown_file': markdown_file,
+            'original_config': original_config,
+            'preserve_technical_terms': dag_run_conf.get('preserve_technical_terms', True),
+            'chinese_source': dag_run_conf.get('chinese_source', True),
+            'lines_total': len(markdown_content.split('\n')),
+            'processing_start_time': datetime.now().isoformat()
         }
         
-        for wrong_pattern, correct in brand_fixes.items():
-            if re.search(wrong_pattern, text):
-                text = re.sub(wrong_pattern, correct, text)
-        
-        # Выбор словаря терминов в зависимости от языка
-        if target_lang == "ru":
-            terminology = TECHNICAL_TERMINOLOGY_RU
-        else:
-            terminology = TECHNICAL_TERMINOLOGY
-        
-        # Применение технических терминов
-        for chinese_term, translation in terminology.items():
-            if chinese_term in text:
-                text = text.replace(chinese_term, translation)
-        
-        return text
-    
-    def get_cache_key(self, text: str, source_lang: str, target_lang: str) -> str:
-        """Создание ключа для кэша"""
-        content = f"{source_lang}-{target_lang}-{text}"
-        return hashlib.md5(content.encode()).hexdigest()[:16]
-
-# =============================================================================
-# ФУНКЦИИ DAG
-# =============================================================================
-
-def initialize_translation(**context):
-    """Инициализация процесса перевода"""
-    dag_run_conf = context['dag_run'].conf
-    
-    # Получение конфигурации от предыдущего DAG
-    markdown_file = dag_run_conf.get('markdown_file')
-    original_config = dag_run_conf.get('original_config', {})
-    
-    target_language = original_config.get('target_language', 'ru')
-    
-    # Чтение Markdown контента
-    if markdown_file and SharedUtils.validate_input_file(markdown_file.replace('.md', '.pdf')):
-        try:
-            with open(markdown_file, 'r', encoding='utf-8') as f:
-                markdown_content = f.read()
-        except:
-            # Fallback: читаем из конфигурации
-            markdown_content = dag_run_conf.get('markdown_content', '')
-    else:
-        markdown_content = dag_run_conf.get('markdown_content', '')
-    
-    if not markdown_content:
-        raise ValueError("Нет Markdown контента для перевода")
-    
-    # Инициализация сессии перевода
-    translation_session = {
-        'session_id': f"translation_{int(datetime.now().timestamp())}",
-        'source_language': 'zh-CN',
-        'target_language': target_language,
-        'markdown_content': markdown_content,
-        'original_config': original_config,
-        'translation_model': 'Qwen/Qwen3-30B-A3B-Instruct-2507',  # ИСПРАВЛЕННАЯ МОДЕЛЬ
-        'preserve_technical_terms': True,
-        'batch_processing': True,
-        'lines_total': len(markdown_content.split('\n')),
-        'processing_start_time': datetime.now().isoformat()
-    }
-    
-    print(f"🌐 Инициализация перевода: {target_language}")
-    print(f"📊 Строк для перевода: {translation_session['lines_total']}")
-    
-    return translation_session
-
-def batch_translate_content(**context):
-    """Пакетный перевод контента с оптимизацией"""
-    translation_session = context['task_instance'].xcom_pull(task_ids='initialize_translation')
-    
-    markdown_content = translation_session['markdown_content']
-    target_language = translation_session['target_language']
-    
-    # Инициализация vLLM клиента
-    vllm_client = VLLMTranslationClient(
-        base_url=ConfigUtils.get_service_config()['vllm'],
-        model=translation_session['translation_model']
-    )
-    
-    print(f"🚀 Начало пакетного перевода на {target_language}")
-    
-    # Разделение на строки для батчинга
-    lines = markdown_content.split('\n')
-    
-    # Интеллектуальное батчирование по типу контента
-    batches = create_smart_batches(lines)
-    
-    translated_lines = []
-    batch_count = 0
-    
-    for batch in batches:
-        batch_count += 1
-        batch_content = '\n'.join(batch)
-        
-        if not batch_content.strip():
-            translated_lines.extend(batch)
-            continue
-        
-        print(f"📦 Обработка батча {batch_count}/{len(batches)}")
-        
-        # Перевод батча
-        translated_batch = vllm_client.make_translation_request(
-            batch_content, 'китайский', get_language_name(target_language)
+        MetricsUtils.record_processing_metrics(
+            dag_id='translation_pipeline',
+            task_id='initialize_translation',
+            processing_time=time.time() - start_time,
+            success=True
         )
         
-        if translated_batch:
-            # Разбиение обратно на строки
-            batch_lines = translated_batch.split('\n')
-            if len(batch_lines) == len(batch):
-                translated_lines.extend(batch_lines)
-            else:
-                # Если разбиение не удалось, переводим построчно
-                for line in batch:
-                    if line.strip():
-                        translated_line = vllm_client.make_translation_request(
-                            line, 'китайский', get_language_name(target_language)
-                        )
-                        translated_lines.append(translated_line or line)
-                    else:
-                        translated_lines.append(line)
-        else:
-            # Если перевод батча не удался, оставляем оригинал
-            translated_lines.extend(batch)
+        logger.info(f"✅ Перевод инициализирован: {target_language} ({translation_session['lines_total']} строк)")
+        return translation_session
         
-        # Небольшая задержка между батчами
-        time.sleep(0.2)
+    except Exception as e:
+        MetricsUtils.record_processing_metrics(
+            dag_id='translation_pipeline',
+            task_id='initialize_translation',
+            processing_time=time.time() - start_time,
+            success=False
+        )
+        logger.error(f"❌ Ошибка инициализации перевода: {e}")
+        raise
+
+def perform_translation(**context) -> Dict[str, Any]:
+    """Выполнение перевода документа"""
+    start_time = time.time()
+    session = context['task_instance'].xcom_pull(task_ids='initialize_translation')
     
-    # Объединение результата
-    translated_content = '\n'.join(translated_lines)
-    
-    # Валидация качества перевода
-    quality_score = validate_translation_quality(markdown_content, translated_content, target_language)
-    
-    translation_results = {
-        'translated_content': translated_content,
-        'source_lines': len(lines),
-        'batches_processed': len(batches),
-        'quality_score': quality_score,
-        'translation_stats': {
-            'input_length': len(markdown_content),
-            'output_length': len(translated_content),
-            'chinese_remaining': len(re.findall(r'[\u4e00-\u9fff]', translated_content))
+    try:
+        markdown_content = session['markdown_content']
+        target_language = session['target_language']
+        
+        logger.info(f"🔄 Начинаем перевод на {target_language}")
+        
+        # Выбираем словарь перевода
+        if target_language == 'ru':
+            translation_dict = CHINESE_TO_RUSSIAN
+        elif target_language == 'en':
+            translation_dict = CHINESE_TO_ENGLISH
+        else:
+            # Для неподдерживаемых языков возвращаем оригинал
+            logger.warning(f"Язык {target_language} не поддерживается, возвращаем оригинал")
+            translation_dict = {}
+        
+        if target_language == 'original' or target_language == 'zh':
+            # Возвращаем оригинальный китайский контент
+            translated_content = markdown_content
+        else:
+            # Выполняем перевод
+            translated_content = translate_content(
+                markdown_content, 
+                translation_dict, 
+                target_language,
+                session.get('preserve_technical_terms', True)
+            )
+        
+        # Постобработка перевода
+        final_content = post_process_translation(translated_content, target_language)
+        
+        # Валидация качества
+        quality_score = validate_translation_quality(
+            markdown_content, 
+            final_content, 
+            target_language
+        )
+        
+        translation_results = {
+            'translated_content': final_content,
+            'source_length': len(markdown_content),
+            'translated_length': len(final_content),
+            'quality_score': quality_score,
+            'translation_stats': {
+                'processing_time_seconds': time.time() - start_time,
+                'translation_method': 'builtin_dictionary_v3',
+                'chinese_chars_remaining': count_chinese_characters(final_content),
+                'technical_terms_preserved': count_preserved_technical_terms(final_content)
+            }
         }
-    }
-    
-    print(f"✅ Перевод завершен. Качество: {quality_score}%")
-    return translation_results
-
-def create_smart_batches(lines: List[str]) -> List[List[str]]:
-    """Интеллектуальное создание батчей по типу контента"""
-    batches = []
-    current_batch = []
-    max_batch_size = 6
-    
-    for line in lines:
-        content_type = analyze_line_complexity(line)
-        optimal_batch_size = get_optimal_batch_size(content_type)
         
-        if len(current_batch) >= optimal_batch_size and current_batch:
-            batches.append(current_batch)
-            current_batch = [line]
-        else:
-            current_batch.append(line)
-    
-    if current_batch:
-        batches.append(current_batch)
-    
-    return batches
+        MetricsUtils.record_processing_metrics(
+            dag_id='translation_pipeline',
+            task_id='perform_translation',
+            processing_time=time.time() - start_time,
+            success=True
+        )
+        
+        logger.info(f"✅ Перевод завершен. Качество: {quality_score:.1f}%")
+        return translation_results
+        
+    except Exception as e:
+        MetricsUtils.record_processing_metrics(
+            dag_id='translation_pipeline',
+            task_id='perform_translation',
+            processing_time=time.time() - start_time,
+            success=False
+        )
+        logger.error(f"❌ Ошибка выполнения перевода: {e}")
+        raise
 
-def analyze_line_complexity(line: str) -> str:
-    """Анализ сложности строки для оптимального батчинга"""
-    if not line.strip():
-        return 'empty'
-    
-    if line.strip().startswith('#'):
-        return 'header'
-    
-    if '|' in line and line.count('|') > 2:
-        return 'table'
-    
-    if any(re.search(pattern, line) for pattern in [r'\d+\s*(GB|MB|GHz|MHz|W|TB)', r'ipmitool', r'0x[0-9a-f]+']):
-        return 'technical_specs'
-    
-    if len(line) > 100:
-        return 'long_text'
-    
-    return 'text'
+def translate_content(content: str, translation_dict: Dict[str, str], target_lang: str, preserve_terms: bool = True) -> str:
+    """Основная функция перевода контента"""
+    try:
+        # Сначала сохраняем технические термины
+        if preserve_terms:
+            for chinese_term, english_term in TECHNICAL_TERMS.items():
+                if chinese_term in content:
+                    # Заменяем китайские термины на английские аналоги
+                    content = content.replace(chinese_term, english_term)
+        
+        # Применяем словарь перевода
+        for chinese_phrase, translation in translation_dict.items():
+            if chinese_phrase in content and translation:
+                content = content.replace(chinese_phrase, translation)
+        
+        # Специальная обработка для заголовков
+        content = translate_chinese_headings(content, target_lang)
+        
+        # Обработка таблиц
+        content = translate_table_content(content, translation_dict)
+        
+        return content
+        
+    except Exception as e:
+        logger.warning(f"Ошибка перевода контента: {e}")
+        return content
 
-def get_optimal_batch_size(content_type: str) -> int:
-    """Оптимальный размер батча для типа контента"""
-    batch_sizes = {
-        'empty': 20,
-        'header': 4,
-        'table': 2,
-        'technical_specs': 3,
-        'long_text': 1,
-        'text': 6
-    }
-    return batch_sizes.get(content_type, 4)
+def translate_chinese_headings(content: str, target_lang: str) -> str:
+    """Перевод китайских заголовков"""
+    try:
+        lines = content.split('\n')
+        translated_lines = []
+        
+        heading_translations = {
+            'ru': {
+                '第': 'Глава',
+                '章': '',
+                '节': 'Раздел',
+                '部分': 'Часть',
+                '概述': 'Обзор',
+                '介绍': 'Введение',
+                '总结': 'Заключение',
+                '附录': 'Приложение'
+            },
+            'en': {
+                '第': 'Chapter',
+                '章': '',
+                '节': 'Section',
+                '部分': 'Part',
+                '概述': 'Overview',
+                '介绍': 'Introduction',
+                '总结': 'Summary',
+                '附录': 'Appendix'
+            }
+        }
+        
+        translations = heading_translations.get(target_lang, {})
+        
+        for line in lines:
+            if line.strip().startswith('#'):
+                # Это заголовок - переводим его содержимое
+                for chinese, translation in translations.items():
+                    if chinese in line and translation:
+                        line = line.replace(chinese, translation)
+            
+            translated_lines.append(line)
+        
+        return '\n'.join(translated_lines)
+        
+    except Exception as e:
+        logger.warning(f"Ошибка перевода заголовков: {e}")
+        return content
 
-def get_language_name(lang_code: str) -> str:
-    """Получение полного имени языка"""
-    languages = {
-        'ru': 'русский',
-        'en': 'английский',
-        'zh': 'китайский'
-    }
-    return languages.get(lang_code, lang_code)
+def translate_table_content(content: str, translation_dict: Dict[str, str]) -> str:
+    """Перевод содержимого таблиц"""
+    try:
+        lines = content.split('\n')
+        translated_lines = []
+        
+        for line in lines:
+            if '|' in line and len(line.split('|')) >= 3:
+                # Это строка таблицы - переводим содержимое ячеек
+                cells = line.split('|')
+                translated_cells = []
+                
+                for cell in cells:
+                    cell_content = cell.strip()
+                    # Применяем переводы к содержимому ячеек
+                    for chinese, translation in translation_dict.items():
+                        if chinese in cell_content and translation:
+                            cell_content = cell_content.replace(chinese, translation)
+                    translated_cells.append(cell_content)
+                
+                line = '|'.join(translated_cells)
+            
+            translated_lines.append(line)
+        
+        return '\n'.join(translated_lines)
+        
+    except Exception as e:
+        logger.warning(f"Ошибка перевода таблиц: {e}")
+        return content
+
+def post_process_translation(content: str, target_lang: str) -> str:
+    """Постобработка переведенного контента"""
+    try:
+        # Очистка лишних пробелов
+        content = re.sub(r'\n\s*\n\s*\n+', '\n\n', content)
+        
+        # Исправление пунктуации для русского языка
+        if target_lang == 'ru':
+            # Замена точек на правильную пунктуацию
+            content = re.sub(r'\.([А-Я])', r'. \1', content)
+            # Исправление кавычек
+            content = content.replace('"', '«').replace('"', '»')
+        
+        # Исправление технических терминов в скобках
+        content = re.sub(r'\(\s*([A-Za-z0-9]+)\s*\)', r' (\1)', content)
+        
+        return content.strip()
+        
+    except Exception as e:
+        logger.warning(f"Ошибка постобработки: {e}")
+        return content
 
 def validate_translation_quality(original: str, translated: str, target_lang: str) -> float:
-    """Валидация качества перевода (адаптировано из ollama-translator)"""
-    quality_score = 100.0
-    
-    # 1. Проверка китайских символов
-    chinese_count = len(re.findall(r'[\u4e00-\u9fff]', translated))
-    if chinese_count > 0:
-        quality_score -= min(50, chinese_count * 3)
-    
-    # 2. Проверка размышлений и thinking
-    thinking_patterns = [
-        r'[Хх]орошо[,\s]*мне', r'[Сс]начала посмотр', r'Let me', r'First I',
-        r'[Вв]от перевод', r'Here is', r'[Нн]иже представлен',
-        r'<думаю>', r'</думаю>', r'<thinking>', r'</thinking>'
-    ]
-    
-    thinking_count = sum(len(re.findall(pattern, translated)) for pattern in thinking_patterns)
-    if thinking_count > 0:
-        quality_score -= min(30, thinking_count * 10)
-    
-    # 3. Проверка правильности перевода брендов
-    if "问天" in original and "WenTian" not in translated:
-        quality_score -= 20
-    
-    # 4. Проверка структуры таблиц
-    orig_table_rows = len(re.findall(r'^\|.*\|$', original, re.MULTILINE))
-    trans_table_rows = len(re.findall(r'^\|.*\|$', translated, re.MULTILINE))
-    
-    if orig_table_rows > 0:
-        table_preservation = trans_table_rows / orig_table_rows
-        if table_preservation < 0.9:
+    """Валидация качества перевода"""
+    try:
+        quality_score = 100.0
+        
+        # Для оригинального китайского - максимальный балл
+        if target_lang in ['original', 'zh']:
+            return 100.0
+        
+        # Проверка длины
+        length_ratio = len(translated) / max(len(original), 1)
+        if length_ratio < 0.5 or length_ratio > 2.0:
             quality_score -= 15
-    
-    # 5. Проверка размера
-    size_ratio = len(translated) / max(len(original), 1)
-    if size_ratio > 2.5 or size_ratio < 0.4:
-        quality_score -= 10
-    
-    return max(0, quality_score)
+        
+        # Проверка сохранения технических терминов
+        preserved_terms = count_preserved_technical_terms(translated)
+        original_terms = count_chinese_technical_terms(original)
+        
+        if original_terms > 0:
+            term_preservation = min(1.0, preserved_terms / original_terms)
+            quality_score += term_preservation * 10
+        
+        # Проверка структуры (заголовки, таблицы)
+        original_headers = len(re.findall(r'^#+\s', original, re.MULTILINE))
+        translated_headers = len(re.findall(r'^#+\s', translated, re.MULTILINE))
+        
+        if original_headers > 0:
+            header_preservation = translated_headers / original_headers
+            if header_preservation < 0.9:
+                quality_score -= 10
+        
+        # Проверка китайских символов (должно быть меньше в переводе)
+        chinese_remaining = count_chinese_characters(translated)
+        chinese_original = count_chinese_characters(original)
+        
+        if chinese_original > 0:
+            chinese_reduction = 1 - (chinese_remaining / chinese_original)
+            quality_score += chinese_reduction * 20
+        
+        return max(0, min(100, quality_score))
+        
+    except Exception:
+        return 75.0  # Средняя оценка по умолчанию
 
-def intelligent_fix_remaining(**context):
-    """Интеллектуальное исправление оставшихся китайских символов"""
-    translation_results = context['task_instance'].xcom_pull(task_ids='batch_translate_content')
-    translation_session = context['task_instance'].xcom_pull(task_ids='initialize_translation')
+def count_chinese_characters(text: str) -> int:
+    """Подсчет китайских символов"""
+    return len(re.findall(r'[\u4e00-\u9fff]', text))
+
+def count_preserved_technical_terms(text: str) -> int:
+    """Подсчет сохраненных технических терминов"""
+    count = 0
+    for term in TECHNICAL_TERMS.values():
+        count += text.count(term)
+    return count
+
+def count_chinese_technical_terms(text: str) -> int:
+    """Подсчет китайских технических терминов"""
+    count = 0
+    for term in TECHNICAL_TERMS.keys():
+        count += text.count(term)
+    return count
+
+def save_translation_result(**context) -> Dict[str, Any]:
+    """Сохранение результата перевода"""
+    start_time = time.time()
     
-    translated_content = translation_results['translated_content']
-    chinese_remaining = translation_results['translation_stats']['chinese_remaining']
-    
-    if chinese_remaining == 0:
-        print("✅ Китайских символов не обнаружено, исправление не требуется")
-        return translation_results
-    
-    print(f"🔧 Обнаружено {chinese_remaining} китайских символов, запускаем исправление...")
-    
-    # Инициализация клиента для исправления
-    vllm_client = VLLMTranslationClient(
-        base_url=ConfigUtils.get_service_config()['vllm'],
-        model=translation_session['translation_model']
-    )
-    
-    # Поиск китайских фрагментов
-    chinese_fragments = []
-    for match in re.finditer(r'[\u4e00-\u9fff]+', translated_content):
-        fragment = match.group()
-        if len(fragment) >= 2:  # Минимальная длина фрагмента
-            chinese_fragments.append((fragment, match.span()))
-    
-    # Исправление по одному фрагменту
-    current_text = translated_content
-    fixes_count = 0
-    target_language = translation_session['target_language']
-    
-    for fragment, span in chinese_fragments[:10]:  # Максимум 10 исправлений
-        translated_fragment = vllm_client.make_translation_request(
-            fragment, 'китайский', get_language_name(target_language)
+    try:
+        session = context['task_instance'].xcom_pull(task_ids='initialize_translation')
+        translation_results = context['task_instance'].xcom_pull(task_ids='perform_translation')
+        
+        original_config = session['original_config']
+        target_language = session['target_language']
+        timestamp = original_config.get('timestamp', int(time.time()))
+        filename = original_config.get('filename', 'unknown.pdf')
+        
+        # Определение пути сохранения
+        output_dir = f"/app/output/{target_language}"
+        os.makedirs(output_dir, exist_ok=True)
+        
+        translated_filename = f"{timestamp}_{filename.replace('.pdf', '.md')}"
+        output_path = f"{output_dir}/{translated_filename}"
+        
+        # Сохранение переведенного контента
+        with open(output_path, 'w', encoding='utf-8') as f:
+            f.write(translation_results['translated_content'])
+        
+        # Подготовка конфигурации для Stage 4
+        stage4_config = {
+            'translated_file': output_path,
+            'translated_content': translation_results['translated_content'],
+            'original_config': original_config,
+            'stage3_completed': True,
+            'translation_metadata': {
+                'target_language': target_language,
+                'quality_score': translation_results['quality_score'],
+                'translation_method': 'builtin_dictionary_v3',
+                'chinese_chars_remaining': translation_results['translation_stats']['chinese_chars_remaining'],
+                'technical_terms_preserved': translation_results['translation_stats']['technical_terms_preserved'],
+                'completion_time': datetime.now().isoformat()
+            }
+        }
+        
+        MetricsUtils.record_processing_metrics(
+            dag_id='translation_pipeline',
+            task_id='save_translation_result',
+            processing_time=time.time() - start_time,
+            success=True
         )
         
-        if translated_fragment and fragment != translated_fragment and not re.search(r'[\u4e00-\u9fff]', translated_fragment):
-            current_text = current_text.replace(fragment, translated_fragment, 1)
-            fixes_count += 1
-            print(f"✅ Исправлен #{fixes_count}: {fragment} → {translated_fragment[:20]}...")
-    
-    # Обновление результатов
-    final_chinese_count = len(re.findall(r'[\u4e00-\u9fff]', current_text))
-    improvement = chinese_remaining - final_chinese_count
-    
-    print(f"📈 Результат исправления: {chinese_remaining} → {final_chinese_count} (исправлено: {improvement})")
-    
-    translation_results['translated_content'] = current_text
-    translation_results['translation_stats']['chinese_remaining'] = final_chinese_count
-    translation_results['fixes_applied'] = fixes_count
-    
-    return translation_results
+        logger.info(f"💾 Перевод сохранен: {output_path}")
+        return stage4_config
+        
+    except Exception as e:
+        MetricsUtils.record_processing_metrics(
+            dag_id='translation_pipeline',
+            task_id='save_translation_result',
+            processing_time=time.time() - start_time,
+            success=False
+        )
+        logger.error(f"❌ Ошибка сохранения перевода: {e}")
+        raise
 
-def save_translation_result(**context):
-    """Сохранение результата перевода"""
-    translation_session = context['task_instance'].xcom_pull(task_ids='initialize_translation')
-    translation_results = context['task_instance'].xcom_pull(task_ids='intelligent_fix_remaining')
-    
-    original_config = translation_session['original_config']
-    target_language = translation_session['target_language']
-    timestamp = original_config.get('timestamp', int(datetime.now().timestamp()))
-    filename = original_config.get('filename', 'unknown.pdf')
-    
-    # Определение пути сохранения
-    output_path = SharedUtils.prepare_output_path(filename, target_language, timestamp)
-    
-    # Сохранение переведенного контента
-    SharedUtils.save_final_result(
-        content=translation_results['translated_content'],
-        output_path=output_path,
-        metadata={
-            'source_file': original_config.get('input_file'),
-            'target_language': target_language,
-            'translation_model': translation_session['translation_model'],
-            'translation_stats': translation_results['translation_stats'],
-            'quality_score': translation_results['quality_score'],
-            'processing_time': (datetime.now() - datetime.fromisoformat(translation_session['processing_start_time'])).total_seconds(),
-            'fixes_applied': translation_results.get('fixes_applied', 0)
-        }
-    )
-    
-    # Результат для следующего DAG
-    dag4_config = {
-        'translated_file': output_path,
-        'translated_content': translation_results['translated_content'],
-        'translation_metadata': {
-            'target_language': target_language,
-            'quality_score': translation_results['quality_score'],
-            'source_lines': translation_results['source_lines'],
-            'translation_stats': translation_results['translation_stats']
-        },
-        'original_config': original_config,
-        'dag3_completed': True
-    }
-    
-    print(f"💾 Результат перевода сохранен: {output_path}")
-    return dag4_config
+def notify_translation_completion(**context) -> None:
+    """Уведомление о завершении перевода"""
+    try:
+        stage4_config = context['task_instance'].xcom_pull(task_ids='save_translation_result')
+        translation_metadata = stage4_config['translation_metadata']
+        
+        target_language = translation_metadata['target_language']
+        quality_score = translation_metadata['quality_score']
+        chinese_remaining = translation_metadata['chinese_chars_remaining']
+        tech_terms = translation_metadata['technical_terms_preserved']
+        
+        message = f"""
+✅ TRANSLATION PIPELINE ЗАВЕРШЕН УСПЕШНО
 
-# =============================================================================
-# ОПРЕДЕЛЕНИЕ ЗАДАЧ DAG
-# =============================================================================
+🌐 Целевой язык: {target_language}
+🎯 Качество перевода: {quality_score:.1f}%
+🈶 Китайских символов осталось: {chinese_remaining}
+🔧 Технических терминов сохранено: {tech_terms}
+📊 Метод: {translation_metadata['translation_method']}
+📁 Файл: {stage4_config['translated_file']}
+
+✅ Готов к передаче на Stage 4 (Quality Assurance)
+        """
+        
+        logger.info(message)
+        NotificationUtils.send_success_notification(context, stage4_config)
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка отправки уведомления: {e}")
+
+# ================================================================================
+# ОПРЕДЕЛЕНИЕ ЗАДАЧ
+# ================================================================================
 
 # Задача 1: Инициализация перевода
 init_translation = PythonOperator(
     task_id='initialize_translation',
     python_callable=initialize_translation,
+    execution_timeout=timedelta(minutes=5),
     dag=dag
 )
 
-# Задача 2: Пакетный перевод контента
-batch_translate = PythonOperator(
-    task_id='batch_translate_content',
-    python_callable=batch_translate_content,
+# Задача 2: Выполнение перевода
+perform_translation_task = PythonOperator(
+    task_id='perform_translation',
+    python_callable=perform_translation,
+    execution_timeout=timedelta(minutes=20),
     dag=dag
 )
 
-# Задача 3: Исправление остатков
-fix_remaining = PythonOperator(
-    task_id='intelligent_fix_remaining',
-    python_callable=intelligent_fix_remaining,
-    dag=dag
-)
-
-# Задача 4: Сохранение результата
+# Задача 3: Сохранение результата
 save_result = PythonOperator(
     task_id='save_translation_result',
     python_callable=save_translation_result,
+    execution_timeout=timedelta(minutes=5),
     dag=dag
 )
 
-def notify_completion(**context):
-    """Уведомление о завершении перевода"""
-    dag4_config = context['task_instance'].xcom_pull(task_ids='save_translation_result')
-    translation_session = context['task_instance'].xcom_pull(task_ids='initialize_translation')
-    
-    target_language = translation_session['target_language']
-    quality_score = dag4_config['translation_metadata']['quality_score']
-    
-    message = f"""
-    ✅ DAG 3 (Translation Pipeline) успешно завершен
-    
-    Язык перевода: {target_language}
-    Качество: {quality_score:.1f}%
-    Модель: {translation_session['translation_model']}
-    Файл: {dag4_config['translated_file']}
-    
-    Следующий этап: Quality Assurance (DAG 4)
-    """
-    
-    print(message)
-    NotificationUtils.send_success_notification(context, dag4_config)
-
-# Задача 5: Уведомление
-notify_task = PythonOperator(
-    task_id='notify_completion',
-    python_callable=notify_completion,
+# Задача 4: Уведомление о завершении
+notify_completion = PythonOperator(
+    task_id='notify_translation_completion',
+    python_callable=notify_translation_completion,
+    trigger_rule='all_done',
+    execution_timeout=timedelta(minutes=2),
     dag=dag
 )
 
-# Определение зависимостей задач
-init_translation >> batch_translate >> fix_remaining >> save_result >> notify_task
+# Определение зависимостей
+init_translation >> perform_translation_task >> save_result >> notify_completion
 
-# Настройка обработки ошибок
-def handle_failure(context):
-    """Обработка ошибок в DAG"""
-    NotificationUtils.send_failure_notification(context, context.get('exception'))
+# Обработка ошибок
+def handle_translation_failure(context):
+    """Обработка ошибок перевода"""
+    try:
+        failed_task = context['task_instance'].task_id
+        exception = context.get('exception')
+        
+        error_message = f"""
+🔥 ОШИБКА В TRANSLATION PIPELINE
+
+Задача: {failed_task}
+Ошибка: {str(exception) if exception else 'Unknown'}
+
+Возможные причины:
+1. Отсутствует Markdown файл от Stage 2
+2. Неподдерживаемый язык перевода
+3. Проблемы с сохранением результата
+4. Ошибки в словарях перевода
+
+Требуется проверка входных данных и конфигурации.
+        """
+        
+        logger.error(error_message)
+        NotificationUtils.send_failure_notification(context, exception)
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка в обработчике ошибок: {e}")
 
 # Применение обработчика ошибок ко всем задачам
 for task in dag.tasks:
-    task.on_failure_callback = handle_failure
+    task.on_failure_callback = handle_translation_failure

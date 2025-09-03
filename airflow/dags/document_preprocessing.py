@@ -24,15 +24,9 @@ import time
 from typing import Dict, Any, Optional
 from pathlib import Path
 
-# Прямые импорты для обработки (без микросервисов)
-try:
-    from docling.document_converter import DocumentConverter, PdfFormatOption
-    from docling.datamodel.base_models import InputFormat
-    from docling.datamodel.pipeline_options import PdfPipelineOptions
-    DOCLING_AVAILABLE = True
-except ImportError:
-    DOCLING_AVAILABLE = False
-    logging.warning("Docling не установлен - использую fallback обработку")
+# Прямые импорты для обработки (через внешний сервис document-processor)
+import requests  # ← выносим конвертацию из Airflow в микросервис [оркестрация]
+DOCUMENT_PROCESSOR_URL = os.getenv('DOCUMENT_PROCESSOR_URL', 'http://document-processor:8001')
 
 # Утилиты
 from shared_utils import (
@@ -122,11 +116,17 @@ def validate_input_file(**context) -> Dict[str, Any]:
         logger.info(f"📋 Получена конфигурация: {json.dumps(dag_run_conf, indent=2, ensure_ascii=False)}")
         
         # Обязательные параметры
-        required_params = ['input_file', 'filename', 'timestamp', 'master_run_id']
+        required_params = ['input_file', 'filename', 'timestamp']
         missing_params = [param for param in required_params if not dag_run_conf.get(param)]
         
         if missing_params:
             raise ValueError(f"Отсутствуют обязательные параметры: {missing_params}")
+
+        master_run_id = dag_run_conf.get('master_run_id') or context['dag_run'].run_id
+        if 'master_run_id' not in dag_run_conf:
+            logger.info(f"🆔 master_run_id не передан во входной конфигурации. "
+                        f"Автозаполнение из контекста: {master_run_id}")
+        dag_run_conf['master_run_id'] = master_run_id  # нормализуем конфигурацию для дальнейших стадий            
         
         # Валидация файла
         input_file = dag_run_conf['input_file']
@@ -221,121 +221,136 @@ def analyze_chinese_document(file_path: str) -> Dict[str, Any]:
         }
 
 def process_document_with_docling(**context) -> Dict[str, Any]:
-    """✅ Основная обработка документа через Docling с китайской оптимизацией"""
+    """✅ Основная обработка документа через внешний сервис document-processor
+    (Docling и OCR запускаются ТОЛЬКО в отдельном сервисе, Airflow здесь — оркестратор)
+    """
     start_time = time.time()
     config = context['task_instance'].xcom_pull(task_ids='validate_input_file')
-    
     try:
         input_file = config['input_file']
         timestamp = config['timestamp']
         filename = config['filename']
-        
-        logger.info(f"🔄 Начинаем обработку китайского документа: {filename}")
-        
-        if not DOCLING_AVAILABLE:
-            # Fallback к простой обработке
-            return process_document_fallback(input_file, config)
-        
-        # ✅ Настройка Docling для китайских документов
-        pipeline_options = PdfPipelineOptions()
-        
-        # Определяем нужен ли OCR
-        use_ocr = config.get('enable_ocr', config['chinese_doc_analysis']['recommended_ocr'])
-        pipeline_options.do_ocr = use_ocr
-        
-        # Специальные настройки для китайских документов
-        pipeline_options.do_table_structure = True  # Важно для технических документов
-        pipeline_options.generate_page_images = config.get('extract_images', True)
-        
-        # Создание конвертера
-        converter = DocumentConverter(
-            format_options={
-                InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options)
-            }
-        )
-        
-        logger.info(f"🚀 Запускаем Docling конвертер (OCR: {'включен' if use_ocr else 'отключен'})")
-        
-        # Конвертация
-        result = converter.convert(input_file)
-        document = result.document
-        
-        # ✅ Извлечение данных с китайской оптимизацией
-        markdown_content = document.export_to_markdown()
-        
-        # Постобработка для китайских документов
-        processed_markdown = post_process_chinese_markdown(markdown_content)
-        
-        # Подготовка промежуточных данных
-        temp_dir = f"/app/temp"
-        os.makedirs(temp_dir, exist_ok=True)
-        intermediate_file = f"{temp_dir}/preprocessing_{timestamp}.json"
-        
-        document_data = {
-            'title': getattr(document, 'title', '') or filename.replace('.pdf', ''),
-            'pages_count': len(document.pages) if hasattr(document, 'pages') else 1,
-            'markdown_content': processed_markdown,
-            'raw_text': processed_markdown,  # Для совместимости
-            'metadata': {
-                'original_file': input_file,
-                'processing_timestamp': timestamp,
-                'docling_version': '2.0+',
-                'ocr_enabled': use_ocr,
-                'chinese_optimized': True,
-                'processing_mode': config['processing_mode']
-            }
+
+        logger.info(f"🔄 Отправляем PDF в document-processor: {DOCUMENT_PROCESSOR_URL}/process")
+
+        # Формируем опции сервиса (то, что ранее задавалось в DAG)
+        options = {
+            "extract_tables": bool(config.get("extract_tables", True)),
+            "extract_images": bool(config.get("extract_images", True)),
+            "extract_formulas": bool(config.get("extract_formulas", True)),
+            "use_ocr": bool(config.get("enable_ocr", config.get("chinese_doc_analysis", {}).get("recommended_ocr", False))),
+            "ocr_languages": config.get("ocr_languages", "eng,chi_sim"),
+            "high_quality_ocr": bool(config.get("high_quality_ocr", True)),
+            "preserve_layout": bool(config.get("preserve_structure", True)),
+            "enable_chunking": False
         }
-        
-        # Сохранение промежуточного результата
-        with open(intermediate_file, 'w', encoding='utf-8') as f:
-            json.dump(document_data, f, ensure_ascii=False, indent=2)
-        
-        processing_time = time.time() - start_time
-        
+
+        # Безопасный временный каталог: TEMP_DIR → processing_paths.temp_dir → $AIRFLOW_HOME/temp
+        airflow_home_temp = os.path.join(os.getenv('AIRFLOW_HOME', '/opt/airflow'), 'temp')  # стандарт для образов Airflow
+        candidates = [
+            airflow_home_temp,
+            os.getenv('TEMP_DIR'),
+            (ConfigUtils.get_processing_paths().get('temp_dir') if 'ConfigUtils' in globals() else None)
+        ]
+        temp_root = None
+        for cand in candidates:
+            if not cand:
+                continue
+            try:
+                os.makedirs(cand, exist_ok=True)
+                temp_root = cand
+                break
+            except PermissionError:
+                logger.warning(f"⚠️ Нет прав на каталог {cand}, пробуем следующий")
+        if not temp_root:
+            # Финальная страховка: используем $AIRFLOW_HOME/temp
+            temp_root = airflow_home_temp
+            os.makedirs(temp_root, exist_ok=True)
+
+        # Отправляем файл и опции в сервис
+        with open(input_file, 'rb') as f:
+            files = {'file': (os.path.basename(input_file), f, 'application/pdf')}
+            data = {'options': json.dumps(options, ensure_ascii=False)}
+            resp = requests.post(f"{DOCUMENT_PROCESSOR_URL}/process", files=files, data=data, timeout=60*30)
+
+        if resp.status_code != 200:
+            err = f"document-processor вернул {resp.status_code}: {resp.text}"
+            logger.error(f"❌ {err}")
+            return {"success": False, "error": err, "original_config": config}
+
+        resp_json = resp.json()
+        if not resp_json.get("success", False):
+            err = f"document-processor сообщил об ошибке: {resp_json.get('message') or resp_json.get('error')}"
+            logger.error(f"❌ {err}")
+            return {"success": False, "error": err, "original_config": config}
+
+        # Находим промежуточный файл, предпочтительно из поля 'intermediate_file'
+        intermediate_file = resp_json.get("intermediate_file")
+        if not intermediate_file:
+            # fallback: пытаемся взять из output_files первый JSON
+            for p in resp_json.get("output_files", []):
+                if str(p).endswith("_intermediate.json") or str(p).endswith(".json"):
+                    intermediate_file = p
+                    break
+
+        if not intermediate_file or not os.path.exists(intermediate_file):
+            # Если сервис вернул путь в своём work_dir, но он не шарится с Airflow,
+            # дополнительно сохраняем полезный минимум рядом (как локальный артефакт)
+            local_intermediate = os.path.join(temp_root, f"preprocessing_{timestamp}.json")
+            safe_payload = {
+                "title": resp_json.get("document_id", filename.replace('.pdf', '')),
+                "pages_count": resp_json.get("pages_count", 0),
+                "metadata": resp_json.get("metadata", {}),
+            }
+            with open(local_intermediate, "w", encoding="utf-8") as f:
+                json.dump(safe_payload, f, ensure_ascii=False, indent=2)
+            intermediate_file = local_intermediate
+            logger.warning("⚠️ Путь промежуточного файла из сервиса недоступен Airflow. "
+                           "Сохранили минимальный локальный артефакт для продолжения пайплайна.")
+
+        processing_time = resp_json.get("processing_time", time.time() - start_time)
+        pages = resp_json.get("pages_count", 0)
+
         result = {
-            'success': True,
-            'document_info': {
-                'title': document_data['title'],
-                'total_pages': document_data['pages_count'],
-                'processing_time': processing_time,
-                'status': 'success'
+            "success": True,
+            "document_info": {
+                "title": filename.replace('.pdf', ''),
+                "total_pages": pages,
+                "processing_time": processing_time,
+                "status": "success"
             },
-            'intermediate_file': intermediate_file,
-            'original_config': config,
-            'processing_stats': {
-                'pages_processed': document_data['pages_count'],
-                'ocr_used': use_ocr,
-                'processing_time_seconds': processing_time,
-                'chinese_chars_found': count_chinese_characters(processed_markdown)
+            "intermediate_file": intermediate_file,
+            "original_config": config,
+            "processing_stats": {
+                "pages_processed": pages,
+                "ocr_used": options["use_ocr"],
+                "processing_time_seconds": processing_time
             }
         }
-        
+
         MetricsUtils.record_processing_metrics(
             dag_id='document_preprocessing',
             task_id='process_document_with_docling',
             processing_time=processing_time,
-            pages_count=document_data['pages_count'],
+            pages_count=pages,
             success=True
         )
-        
-        logger.info(f"✅ Документ обработан успешно за {processing_time:.2f}с")
+        logger.info(f"✅ Обработка через document-processor завершена за {processing_time:.2f}с")
         return result
-        
+
     except Exception as e:
-        error_msg = f"Ошибка обработки документа: {str(e)}"
+        error_msg = f"Ошибка обращения к document-processor: {str(e)}"
         logger.error(f"❌ {error_msg}")
-        
         MetricsUtils.record_processing_metrics(
             dag_id='document_preprocessing',
             task_id='process_document_with_docling',
             processing_time=time.time() - start_time,
             success=False
         )
-        
         return {
-            'success': False,
-            'error': error_msg,
-            'original_config': config
+            "success": False,
+            "error": error_msg,
+            "original_config": config
         }
 
 def process_document_fallback(input_file: str, config: Dict[str, Any]) -> Dict[str, Any]:
@@ -350,7 +365,7 @@ def process_document_fallback(input_file: str, config: Dict[str, Any]) -> Dict[s
         markdown_content += f"Размер: {config['chinese_doc_analysis']['file_size_mb']:.2f} MB\n"
         
         # Подготовка данных
-        temp_dir = "/app/temp"
+        temp_dir = "/opt/airflow/temp"
         os.makedirs(temp_dir, exist_ok=True)
         intermediate_file = f"{temp_dir}/preprocessing_{config['timestamp']}.json"
         

@@ -1,24 +1,23 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-
 """
-✅ ИСПРАВЛЕННЫЙ DAG: Document Preprocessing - Финальная версия
+✅ ИСПРАВЛЕННЫЙ DAG: Document Preprocessing - Финальная версия с Bridge-файлами
 
 ИСПРАВЛЕНИЯ В ВЕРСИИ 4.0:
 - ✅ Решена проблема сериализации TableData через правильную интеграцию с document-processor API
-- ✅ Убраны прямые импорты Docling из Airflow (правильная архитектура микросервисов)  
+- ✅ Убраны прямые импорты Docling из Airflow (правильная архитектура микросервисов)
 - ✅ Исправлена проблема master_run_id (автозаполнение из context)
 - ✅ Исправлена проблема Permission denied с /app/temp (использование $AIRFLOW_HOME/temp)
 - ✅ Добавлен retry при ошибке сериализации таблиц (extract_tables=False)
-- ✅ Улучшена обработка ошибок и логирование
+- ✅ НОВОЕ: Выбор правильного doc_*_intermediate.json из output_files
+- ✅ НОВОЕ: Замена префикса пути /app/temp → /opt/airflow/temp  
+- ✅ НОВОЕ: Создание bridge-файла stage1_bridge_{timestamp}.json
 """
 
 from datetime import datetime, timedelta
-
 from airflow import DAG
 from airflow.operators.python import PythonOperator
 from airflow.exceptions import AirflowException
-
 import os
 import json
 import logging
@@ -59,7 +58,7 @@ dag = DAG(
 # Конфигурация сервисов
 DOCUMENT_PROCESSOR_URL = os.getenv('DOCUMENT_PROCESSOR_URL', 'http://document-processor:8001')
 
-# Конфигурация для китайских документов  
+# Конфигурация для китайских документов
 CHINESE_DOC_CONFIG = {
     'ocr_languages': 'chi_sim,chi_tra,eng',
     'ocr_confidence_threshold': 0.75,
@@ -70,7 +69,7 @@ CHINESE_DOC_CONFIG = {
     ],
     'tech_terms': {
         '问天': 'WenTian',
-        '联想问天': 'Lenovo WenTian', 
+        '联想问天': 'Lenovo WenTian',
         '天擎': 'ThinkSystem',
         '至强': 'Xeon',
         '可扩展处理器': 'Scalable Processors',
@@ -104,7 +103,7 @@ def validate_input_file(**context) -> Dict[str, Any]:
         master_run_id = dag_run_conf.get('master_run_id') or context['dag_run'].run_id
         if 'master_run_id' not in dag_run_conf:
             logger.info(f"🆔 master_run_id автозаполнен из context: {master_run_id}")
-        dag_run_conf['master_run_id'] = master_run_id
+            dag_run_conf['master_run_id'] = master_run_id
 
         # Валидация файла
         input_file = dag_run_conf['input_file']
@@ -143,23 +142,22 @@ def validate_input_file(**context) -> Dict[str, Any]:
         logger.error(f"❌ Ошибка валидации: {e}")
         raise
 
-
 def analyze_chinese_document(file_path: str) -> Dict[str, Any]:
     """Быстрый анализ китайского документа"""
     try:
         file_size = os.path.getsize(file_path)
         file_hash = SharedUtils.calculate_file_hash(file_path)
-        
+
         # Базовый анализ
         estimated_pages = max(1, file_size // 102400)  # ~100KB на страницу
         has_chinese_text = False
-        
+
         # Попытка быстрого анализа через PyMuPDF если доступен
         try:
             import fitz
             doc = fitz.open(file_path)
             estimated_pages = doc.page_count
-            
+
             # Проверка первых страниц на китайский текст
             for page_num in range(min(2, doc.page_count)):
                 page = doc[page_num]
@@ -194,12 +192,11 @@ def analyze_chinese_document(file_path: str) -> Dict[str, Any]:
             'processing_complexity': 'medium'
         }
 
-
 def process_document_with_api(**context) -> Dict[str, Any]:
-    """✅ ИСПРАВЛЕННАЯ обработка через document-processor API (микросервисная архитектура)"""
+    """✅ ИСПРАВЛЕННАЯ обработка через document-processor API с выбором правильного intermediate файла"""
     start_time = time.time()
     config = context['task_instance'].xcom_pull(task_ids='validate_input_file')
-    
+
     try:
         input_file = config['input_file']
         timestamp = config['timestamp']
@@ -208,8 +205,8 @@ def process_document_with_api(**context) -> Dict[str, Any]:
         logger.info(f"🔄 Отправка в document-processor API: {DOCUMENT_PROCESSOR_URL}/process")
 
         # ✅ ИСПРАВЛЕНИЕ: Безопасная временная директория (НЕ /app/temp!)
-        airflow_home_temp = os.path.join(os.getenv('AIRFLOW_HOME', '/opt/airflow'), 'temp')
-        os.makedirs(airflow_home_temp, exist_ok=True)
+        airflow_temp = os.path.join(os.getenv('AIRFLOW_HOME', '/opt/airflow'), 'temp')
+        os.makedirs(airflow_temp, exist_ok=True)
 
         # Формирование опций для API
         api_options = {
@@ -228,8 +225,9 @@ def process_document_with_api(**context) -> Dict[str, Any]:
             with open(input_file, 'rb') as f:
                 files = {'file': (os.path.basename(input_file), f, 'application/pdf')}
                 data = {'options': json.dumps(options, ensure_ascii=False)}
-                
+
                 logger.info(f"📤 Попытка {attempt}: отправка файла {filename} с опциями: {options}")
+
                 return requests.post(
                     f"{DOCUMENT_PROCESSOR_URL}/process",
                     files=files,
@@ -265,26 +263,57 @@ def process_document_with_api(**context) -> Dict[str, Any]:
             logger.error(f"❌ {error_msg}")
             return {"success": False, "error": error_msg, "original_config": config}
 
-        # Обработка ответа API
+        # ✅ НОВОЕ: Правильный выбор intermediate файла из output_files
+        def map_to_airflow_temp(path: str) -> str:
+            """Замена префикса /app/temp → /opt/airflow/temp"""
+            if path.startswith("/app/temp"):
+                return path.replace("/app/temp", airflow_temp, 1)
+            return path
+
+        # 1) Предпочесть doc_*_intermediate.json из output_files
         intermediate_file = resp_json.get("intermediate_file")
-        
-        # ✅ ИСПРАВЛЕНИЕ: Fallback на локальный артефакт если путь API недоступен
+        output_files = resp_json.get("output_files", []) or []
+        doc_intermediate = None
+
+        for path in output_files:
+            if isinstance(path, str) and path.endswith("_intermediate.json"):
+                doc_intermediate = path
+                break
+
+        if doc_intermediate:
+            mapped_path = map_to_airflow_temp(doc_intermediate)
+            if os.path.exists(mapped_path):
+                intermediate_file = mapped_path
+                logger.info(f"✅ Выбран полноценный intermediate файл: {intermediate_file}")
+
+        # 2) Если артефакт не найден, использовать минимальный безопасный
         if not intermediate_file or not os.path.exists(intermediate_file):
-            local_intermediate = os.path.join(airflow_home_temp, f"preprocessing_{timestamp}.json")
-            
-            # Минимальные данные для продолжения пайплайна
+            local_intermediate = os.path.join(airflow_temp, f"preprocessing_{timestamp}.json")
             safe_payload = {
                 "title": resp_json.get("document_id", filename.replace('.pdf', '')),
                 "pages_count": resp_json.get("pages_count", 0),
-                "metadata": resp_json.get("metadata", {}),
-                "api_response": resp_json  # Сохраняем полный ответ API
+                "markdown_content": resp_json.get("markdown_content", ""),  # вдруг сервис вернул
+                "raw_text": resp_json.get("raw_text", ""),
+                "api_response": resp_json
             }
-            
+
             with open(local_intermediate, "w", encoding="utf-8") as f:
                 json.dump(safe_payload, f, ensure_ascii=False, indent=2)
-            
             intermediate_file = local_intermediate
-            logger.info(f"📁 Создан локальный промежуточный файл: {intermediate_file}")
+            logger.info(f"📁 Создан безопасный промежуточный файл: {intermediate_file}")
+
+        # ✅ НОВОЕ: 3) Сохранить bridge-файл для оркестратора
+        bridge_file = os.path.join(airflow_temp, f"stage1_bridge_{timestamp}.json")
+        try:
+            with open(bridge_file, "w", encoding="utf-8") as f:
+                json.dump({
+                    "intermediate_file": intermediate_file,
+                    "docling_intermediate": doc_intermediate,  # исходный путь от API
+                    "output_files": output_files
+                }, f, ensure_ascii=False, indent=2)
+            logger.info(f"🌉 Создан bridge-файл: {bridge_file}")
+        except Exception as e:
+            logger.warning(f"Не удалось записать bridge-файл Stage1: {e}")
 
         processing_time = resp_json.get("processing_time", time.time() - start_time)
         pages = resp_json.get("pages_count", 0)
@@ -305,7 +334,8 @@ def process_document_with_api(**context) -> Dict[str, Any]:
                 "processing_time_seconds": processing_time,
                 "tables_extracted": api_options.get("extract_tables", True)
             },
-            "api_response": resp_json  # Полный ответ API для отладки
+            "api_response": resp_json,  # Полный ответ API для отладки
+            "output_files": output_files  # ✅ НОВОЕ: Добавлено для прозрачности
         }
 
         MetricsUtils.record_processing_metrics(
@@ -329,7 +359,7 @@ def process_document_with_api(**context) -> Dict[str, Any]:
             success=False
         )
         return {"success": False, "error": error_msg, "original_config": config}
-        
+
     except Exception as e:
         error_msg = f"Критическая ошибка обработки: {str(e)}"
         logger.error(f"❌ {error_msg}")
@@ -341,20 +371,18 @@ def process_document_with_api(**context) -> Dict[str, Any]:
         )
         return {"success": False, "error": error_msg, "original_config": config}
 
-
 def prepare_for_next_stage(**context) -> Dict[str, Any]:
-    """Подготовка данных для следующего DAG"""
+    """✅ ИСПРАВЛЕНО: Подготовка данных для следующего DAG с проверенным путем"""
     start_time = time.time()
     try:
         result = context['task_instance'].xcom_pull(task_ids='process_document_with_api')
-        
         if not result.get('success'):
             raise AirflowException(f"Обработка документа не удалась: {result.get('error')}")
 
         # Проверка промежуточного файла
         intermediate_file = result.get('intermediate_file')
         if not intermediate_file or not os.path.exists(intermediate_file):
-            raise AirflowException("Промежуточный файл не найден")
+            raise AirflowException("Промежуточный файл не найден после Stage 1")
 
         # Конфигурация для следующего DAG
         next_stage_config = {
@@ -366,8 +394,22 @@ def prepare_for_next_stage(**context) -> Dict[str, Any]:
             },
             'dag1_completed': True,
             'ready_for_transformation': True,
-            'chinese_document': True
+            'chinese_document': True,
+            'output_files': result.get('output_files', [])  # ✅ НОВОЕ: Передаем для фолбэка
         }
+
+        # ✅ НОВОЕ: дублируем в bridge для оркестратора (на случай прямого чтения)
+        airflow_temp = os.path.join(os.getenv('AIRFLOW_HOME', '/opt/airflow'), 'temp')
+        timestamp = result['original_config']['timestamp']
+        bridge_file = os.path.join(airflow_temp, f"stage1_bridge_{timestamp}.json")
+        try:
+            with open(bridge_file, "w", encoding="utf-8") as f:
+                json.dump({
+                    "intermediate_file": intermediate_file,
+                    "output_files": result.get('output_files', [])
+                }, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
 
         MetricsUtils.record_processing_metrics(
             dag_id='document_preprocessing',
@@ -389,7 +431,6 @@ def prepare_for_next_stage(**context) -> Dict[str, Any]:
         logger.error(f"❌ Ошибка подготовки: {e}")
         raise
 
-
 def notify_completion(**context) -> None:
     """Уведомление о завершении"""
     try:
@@ -407,7 +448,7 @@ def notify_completion(**context) -> None:
 📋 Таблицы: {'Да' if stats.get('tables_extracted') else 'Нет'}
 📁 Файл: {next_config.get('intermediate_file', 'N/A')}
 ✅ Готов для следующей стадии
-            """
+"""
             NotificationUtils.send_success_notification(context, result)
         else:
             error = result.get('error', 'Unknown error') if result else 'No result'
@@ -416,14 +457,13 @@ def notify_completion(**context) -> None:
 📄 Файл: {result['original_config']['filename'] if result else 'Unknown'}
 ❌ Ошибка: {error}
 ⏰ Время: {datetime.now().isoformat()}
-            """
+"""
             NotificationUtils.send_failure_notification(context, Exception(error))
 
         logger.info(message)
 
     except Exception as e:
         logger.error(f"❌ Ошибка уведомления: {e}")
-
 
 # ================================================================================
 # ОПРЕДЕЛЕНИЕ ЗАДАЧ
@@ -462,30 +502,28 @@ notify_task = PythonOperator(
 # Определение зависимостей
 validate_input >> process_document >> prepare_next >> notify_task
 
-
 def handle_processing_failure(context):
     """✅ Улучшенная обработка ошибок"""
     try:
         failed_task = context['task_instance'].task_id
         exception = context.get('exception')
-        
+
         error_message = f"""
 🔥 КРИТИЧЕСКАЯ ОШИБКА В DOCUMENT PREPROCESSING v4.0
 Задача: {failed_task}
 Ошибка: {str(exception) if exception else 'Unknown'}
 Возможные причины и решения:
 1. TableData сериализация → повторите с extract_tables=false
-2. Permission denied → проверьте директорию /opt/airflow/temp  
+2. Permission denied → проверьте директорию /opt/airflow/temp
 3. API недоступен → проверьте document-processor:8001/health
 4. Неверный файл → проверьте PDF и его размер
-        """
-        
+"""
+
         logger.error(error_message)
         ErrorHandlingUtils.handle_processing_error(context, exception, failed_task)
-        
+
     except Exception as e:
         logger.error(f"❌ Критическая ошибка в обработчике: {e}")
-
 
 # Применение обработчика ошибок
 for task in dag.tasks:

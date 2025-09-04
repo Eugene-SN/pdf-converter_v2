@@ -290,7 +290,7 @@ services:
       - "9001:9001"
 
     volumes:
-      - ${PROJ_DIR}/input_pdf:${INPUT_DIR}:ro
+      - ${PROJ_DIR}/input:${INPUT_DIR}:ro
       - ${PROJ_DIR}/temp:${OUTPUT_DIR}
       - ${PROJ_DIR}/temp:${TEMP_DIR}
       - ${PADDLEX_HOME}:/home/docprocessor/.paddlex
@@ -348,8 +348,8 @@ services:
       - "8002:8002"
       - "9002:9002"
     volumes:
-      - ${PROJ_DIR}/input_pdf:${INPUT_DIR}:ro
-      - ${PROJ_DIR}/output_md_zh:${OUTPUT_DIR}
+      - ${PROJ_DIR}/input:${INPUT_DIR}:ro
+      - ${PROJ_DIR}/output/zh:${OUTPUT_DIR}
       - ${PROJ_DIR}/temp:${TEMP_DIR}
       - ${HF_HOME}:/models/huggingface:ro
     networks:
@@ -398,10 +398,10 @@ services:
     ports:
       - "8003:8003"
     volumes:
-      - ${PROJ_DIR}/input_pdf:/app/input:ro
-      - ${PROJ_DIR}/output_md_zh:/app/output_zh
-      - ${PROJ_DIR}/output_md_ru:/app/output_ru
-      - ${PROJ_DIR}/output_md_en:/app/output_en
+      - ${PROJ_DIR}/input:/app/input:ro
+      - ${PROJ_DIR}/output/zh:/app/output/zh
+      - ${PROJ_DIR}/output/ru:/app/output/ru
+      - ${PROJ_DIR}/output/en:/app/output/en
       - ${PROJ_DIR}/logs:/app/logs
     networks:
       - ai-net
@@ -462,7 +462,9 @@ services:
       - ${PROJ_DIR}/logs:/opt/airflow/logs
       - ${PROJ_DIR}/airflow/config:/opt/airflow/config
       - ${PROJ_DIR}/airflow/plugins:/opt/airflow/plugins
-      - ${PROJ_DIR}/input_pdf:/mnt/storage/apps/pdf-converter/input_pdf:ro   
+      - ${PROJ_DIR}/input:/mnt/storage/apps/pdf-converter/input:ro
+      - ${PROJ_DIR}/temp:/opt/airflow/temp
+      - ${PROJ_DIR}/output/zh:/app/output/zh   
     ports:
       - '8090:8080'  # Внешний порт 8090 для избежания конфликта с OpenWebUI
     healthcheck:
@@ -485,7 +487,8 @@ services:
       - ${PROJ_DIR}/airflow/config:/opt/airflow/config
       - ${PROJ_DIR}/airflow/plugins:/opt/airflow/plugins
       - ${PROJ_DIR}/temp:/opt/airflow/temp
-      - ${PROJ_DIR}/input_pdf:/mnt/storage/apps/pdf-converter/input_pdf:ro   
+      - ${PROJ_DIR}/output/zh:/app/output/zh   
+      - ${PROJ_DIR}/input:/mnt/storage/apps/pdf-converter/input:ro   
     healthcheck:
       test: ["CMD", "pgrep", "-f", "airflow scheduler"]
       interval: 30s
@@ -506,7 +509,8 @@ services:
       - ${PROJ_DIR}/airflow/config:/opt/airflow/config
       - ${PROJ_DIR}/airflow/plugins:/opt/airflow/plugins
       - ${PROJ_DIR}/temp:/opt/airflow/temp
-      - ${PROJ_DIR}/input_pdf:/mnt/storage/apps/pdf-converter/input_pdf:ro   
+      - ${PROJ_DIR}/output/zh:/app/output/zh
+      - ${PROJ_DIR}/input:/mnt/storage/apps/pdf-converter/input:ro   
     healthcheck:
       test: ["CMD-SHELL", "celery -A airflow.providers.celery.executors.celery_executor.app inspect ping"]
       interval: 30s
@@ -548,10 +552,10 @@ services:
 
       DYNAMIC_MODEL_LOADING: "true"
     volumes:
-      - ${PROJ_DIR}/input_pdf:/app/input_pdf
-      - ${PROJ_DIR}/output_md_zh:/app/output_md_zh
-      - ${PROJ_DIR}/output_md_ru:/app/output_md_ru
-      - ${PROJ_DIR}/output_md_en:/app/output_md_en
+      - ${PROJ_DIR}/input:/app/input
+      - ${PROJ_DIR}/output/zh:/app/output/zh
+      - ${PROJ_DIR}/output/ru:/app/output/ru
+      - ${PROJ_DIR}/output/en:/app/output/en
       - ${PROJ_DIR}/temp:/app/temp
       - ${PROJ_DIR}/logs:/app/logs
     depends_on:
@@ -575,9 +579,9 @@ services:
     container_name: pandoc-render
     volumes:
       - ${PROJ_DIR}/temp:/workspace
-      - ${PROJ_DIR}/output_md_zh:/workspace/input_zh
-      - ${PROJ_DIR}/output_md_ru:/workspace/input_ru
-      - ${PROJ_DIR}/output_md_en:/workspace/input_en
+      - ${PROJ_DIR}/output/zh:/workspace/input_zh
+      - ${PROJ_DIR}/output/ru:/workspace/input_ru
+      - ${PROJ_DIR}/output/en:/workspace/input_en
     restart: unless-stopped
     networks:
       - ai-net
@@ -590,7 +594,7 @@ services:
     container_name: diff-pdf
     volumes:
       - ${PROJ_DIR}/temp:/tmp
-      - ${PROJ_DIR}/input_pdf:/input
+      - ${PROJ_DIR}/input:/input
     restart: unless-stopped
     networks:
       - ai-net

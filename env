@@ -159,10 +159,10 @@ INPUT_DIR=/app/input
 OUTPUT_DIR=/app/output
 TEMP_DIR=/app/temp
 
-UPLOAD_FOLDER=/app/input_pdf
-OUTPUT_FOLDER_ZH=/app/output_md_zh
-OUTPUT_FOLDER_RU=/app/output_md_ru
-OUTPUT_FOLDER_EN=/app/output_md_en
+UPLOAD_FOLDER=/app/input
+OUTPUT_FOLDER_ZH=/app/output/zh
+OUTPUT_FOLDER_RU=/app/output/ru
+OUTPUT_FOLDER_EN=/app/output/en
 TEMP_FOLDER=/app/temp
 
 # ================================================================================

@@ -1,31 +1,88 @@
-# Flask и веб-зависимости
-Flask>=3.0.3
-Werkzeug>=3.0.3
-Jinja2>=3.1.4
+# Flask Document Processor Requirements
+# Исправленная версия для решения проблемы сериализации TableData
 
-# HTTP клиенты для взаимодействия с сервисами
-requests>=2.31.0
-httpx>=0.25.2
+# Основные зависимости Flask
+Flask==3.0.0
+Werkzeug==3.0.1
+gunicorn==21.2.0
 
-# Валидация и обработка данных  
-marshmallow==3.20.1
-python-multipart>=0.0.6
+# Обработка PDF и документов  
+docling>=2.0.0
+PyMuPDF==1.23.26
+pdfplumber==0.10.3
+tabula-py==2.9.0
 
-# Мониторинг и логирование
-prometheus-flask-exporter>=0.23.0
+# Обработка изображений
+Pillow==10.1.0
+opencv-python==4.8.1.78
 
-# Конфигурация
-python-dotenv>=1.0.0
+# OCR библиотеки
+paddleocr>=2.7.0
+paddlepaddle>=2.5.0
+tesseract==0.1.3
+pytesseract==0.3.10
 
-# WSGI сервер для продакшена
-gunicorn==22.0.0
-gevent>=24.10.3
-greenlet>=3.0.3
+# Научные вычисления и ML
+numpy==1.24.4
+scipy==1.11.4
+scikit-image==0.22.0
 
-# Сборка
-setuptools>=68.0.0
-wheel>=0.41.0
+# Работа с данными
+pandas==2.1.4
+openpyxl==3.1.2
 
-# Другие
-itsdangerous>=2.1.2
-click>=8.1.7
+# Networking и HTTP
+requests==2.31.0
+urllib3==2.1.0
+
+# Утилиты для работы с файлами
+python-magic==0.4.27
+pathlib2==2.3.7
+
+# Логирование и мониторинг
+prometheus-client==0.19.0
+statsd==4.0.1
+
+# Конфигурация и переменные окружения
+python-dotenv==1.0.0
+pydantic==2.5.2
+
+# Безопасность
+cryptography==41.0.8
+
+# Системные утилиты
+psutil==5.9.6
+
+# Разработка и тестирование (опционально)
+pytest==7.4.3
+pytest-flask==1.3.0
+black==23.11.0
+flake8==6.1.0
+
+# Дополнительные форматы
+python-docx==1.1.0
+xlrd==2.0.1
+xmltodict==0.13.0
+
+# Асинхронность и задачи
+celery==5.3.4
+redis==5.0.1
+
+# Кэширование
+diskcache==5.6.3
+
+# JSON и сериализация
+orjson==3.9.10
+
+# Дата и время
+pytz==2023.3
+python-dateutil==2.8.2
+
+# Языковые модели и обработка текста (если нужно)
+transformers>=4.35.0
+torch>=2.0.0
+spacy>=3.7.0
+
+# Китайская обработка текста
+jieba==0.42.1
+pypinyin==0.50.0

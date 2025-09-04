@@ -1,54 +1,83 @@
-FROM python:3.11-slim-bookworm
+# Dockerfile для Document Processor Flask API
+# Исправленная версия для решения проблемы сериализации TableData
+
+FROM python:3.11-slim
+
+# Информация о контейнере
+LABEL maintainer="pdf-converter-team"
+LABEL version="4.0"
+LABEL description="Document Processor API с поддержкой Docling и исправленной сериализацией"
 
 # Установка системных зависимостей
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-        curl \
-        gcc \
-        g++ \
-        libffi-dev \
-        libssl-dev \
-        build-essential \
-    && apt-get autoremove -yqq --purge \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y \
+    # Основные системные пакеты
+    build-essential \
+    pkg-config \
+    curl \
+    wget \
+    git \
+    # Библиотеки для обработки изображений и PDF
+    libgl1-mesa-glx \
+    libglib2.0-0 \
+    libsm6 \
+    libxext6 \
+    libxrender-dev \
+    libgomp1 \
+    libgcc-s1 \
+    # OpenCV зависимости
+    libopencv-dev \
+    python3-opencv \
+    # PDF обработка
+    poppler-utils \
+    # OCR зависимости  
+    tesseract-ocr \
+    tesseract-ocr-eng \
+    tesseract-ocr-chi-sim \
+    tesseract-ocr-chi-tra \
+    libtesseract-dev \
+    # Java для tabula-py
+    openjdk-17-jre-headless \
+    # Очистка кэша
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
 
-# Создание рабочего пользователя
-RUN groupadd -r flask && useradd -r -g flask flask
+# Создание пользователя приложения
+RUN groupadd -r docprocessor && useradd -r -g docprocessor docprocessor
 
-# Создание рабочей директории
+# Создание рабочих директорий
 WORKDIR /app
-
-# Копирование файла зависимостей
-COPY requirements-flask.txt /app/requirements-flask.txt
+RUN mkdir -p /app/temp /tmp/document_processor \
+    && chown -R docprocessor:docprocessor /app /tmp/document_processor
 
 # Установка Python зависимостей
+COPY requirements-flask.txt /app/
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel \
     && pip install --no-cache-dir -r requirements-flask.txt
 
-# Создание необходимых директорий
-RUN mkdir -p /app/input_pdf /app/output_md_zh /app/output_md_ru /app/output_md_en /app/temp /app/logs \
-    && chown -R flask:flask /app \
-    && chmod -R 755 /app
+# Копирование кода приложения
+COPY app.py /app/
+COPY shared_utils.py /app/
 
-# Копирование исходного кода приложения
-COPY --chown=flask:flask app.py /app/app.py
-
-# Переключение на пользователя flask
-USER flask
-
-# Установка переменных окружения
+# Настройка переменных окружения
+ENV PYTHONPATH=/app
+ENV PYTHONUNBUFFERED=1
 ENV FLASK_APP=app.py
 ENV FLASK_ENV=production
-ENV PYTHONPATH="/app"
-ENV PYTHONUNBUFFERED=1
+ENV HOST=0.0.0.0
+ENV PORT=8001
+ENV WORK_DIR=/tmp/document_processor
+ENV DEBUG=false
 
-# Открытие порта
-EXPOSE 5000
+# Установка прав доступа
+RUN chown -R docprocessor:docprocessor /app
+USER docprocessor
 
-# Проверка здоровья
-HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
-    CMD curl --fail http://localhost:5000/health || exit 1
+# Проверка здоровья контейнера
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD curl -f http://localhost:${PORT}/health || exit 1
 
-# Команда запуска
-CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "4", "--threads", "2", "--timeout", "120", "--keep-alive", "2", "--max-requests", "1000", "--max-requests-jitter", "100", "app:app"]
+# Экспонирование порта
+EXPOSE 8001
+
+# Запуск приложения
+CMD ["python", "-m", "gunicorn", "--bind", "0.0.0.0:8001", "--workers", "2", "--threads", "4", "--timeout", "300", "--keepalive", "2", "--max-requests", "1000", "--preload", "app:app"]

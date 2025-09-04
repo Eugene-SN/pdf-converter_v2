@@ -111,6 +111,32 @@ logging.basicConfig(
 )
 logger = structlog.get_logger("document_processor_api")
 
+def safe_serialize_tabledata(obj):
+    """Безопасная сериализация объектов TableData и других Docling объектов"""
+    if hasattr(obj, '__dict__'):
+        result = {'_type': obj.__class__.__name__}
+        for key, value in obj.__dict__.items():
+            if not key.startswith('_'):
+                try:
+                    json.dumps(value)
+                    result[key] = value
+                except (TypeError, ValueError):
+                    if hasattr(value, '__dict__'):
+                        result[key] = safe_serialize_tabledata(value)
+                    elif hasattr(value, '__iter__') and not isinstance(value, (str, bytes)):
+                        result[key] = [safe_serialize_tabledata(item) for item in value]
+                    else:
+                        result[key] = str(value)
+        return result
+    elif hasattr(obj, '__iter__') and not isinstance(obj, (str, bytes)):
+        return [safe_serialize_tabledata(item) for item in obj]
+    else:
+        try:
+            json.dumps(obj)
+            return obj
+        except (TypeError, ValueError):
+            return str(obj)
+
 # ================================================================================
 # PROMETHEUS МЕТРИКИ
 # ================================================================================
@@ -488,7 +514,13 @@ async def process_document_endpoint(
         # Сохраняем промежуточный результат для DAG2
         intermediate_file = work_dir / f"{document_id}_intermediate.json"
         with open(intermediate_file, 'w', encoding='utf-8') as f:
-            json.dump(intermediate_data, f, ensure_ascii=False, indent=2)
+            json.dump(
+                intermediate_data,
+                f,
+                ensure_ascii=False,
+                indent=2,
+                default=safe_serialize_tabledata,
+            )
         
         # Также сохраняем основной результат
         result_file = work_dir / f"{document_id}_result.json"

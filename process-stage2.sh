@@ -229,20 +229,17 @@ get_xcom_return_value() {
   resp=$(curl -s --user "$AIRFLOW_USERNAME:$AIRFLOW_PASSWORD" \
     "$AIRFLOW_URL/api/v1/dags/$dag_id/dagRuns/$dag_run_id/taskInstances/$task_id/xcomEntries/return_value")
 
-  # Airflow Stable API возвращает поле "value", которое может быть JSON-строкой
-  # либо base64-кодированным JSON — обрабатываем оба варианта.
+  # Airflow Stable API может вернуть JSON-строку или base64 JSON — обрабатываем оба варианта
   local value_raw
   value_raw=$(echo "$resp" | python3 - << 'PY'
 import sys, json, base64
 try:
     data = json.load(sys.stdin)
     val = data.get("value", "")
-    # Попытка 1: сразу JSON
     try:
         j = json.loads(val)
         print(json.dumps(j))
     except Exception:
-        # Попытка 2: base64 -> JSON
         try:
             dec = base64.b64decode(val)
             j = json.loads(dec.decode("utf-8", errors="ignore"))
@@ -257,29 +254,44 @@ PY
 }
 
 # -----------------------------------------------------------------------------
-# ДОБАВЛЕНО: XCom return_value произвольной задачи DAG1 (для альтернативного пути)
+# ДОБАВЛЕНО: Получить один путь intermediate_file из XCom указанной задачи DAG1
+# 1) d['intermediate_file'] если есть; 2) иначе первый *_intermediate.json из api_response.output_files
 # -----------------------------------------------------------------------------
-get_task_xcom_json() {
+get_task_intermediate_file() {
   local dag_id="$1"
   local dag_run_id="$2"
   local task_id="$3"
+
   local resp
   resp=$(curl -s --user "$AIRFLOW_USERNAME:$AIRFLOW_PASSWORD" \
     "$AIRFLOW_URL/api/v1/dags/$dag_id/dagRuns/$dag_run_id/taskInstances/$task_id/xcomEntries/return_value")
+
   echo "$resp" | python3 - << 'PY'
 import sys, json, base64
-try:
-    data = json.load(sys.stdin)
-    val = data.get("value","")
+def parse_val(raw):
     try:
-        print(json.dumps(json.loads(val)))
+        return json.loads(raw)
     except Exception:
         try:
-            print(json.dumps(json.loads(base64.b64decode(val).decode("utf-8","ignore"))))
+            return json.loads(base64.b64decode(raw).decode("utf-8","ignore"))
         except Exception:
-            print("{}")
+            return {}
+try:
+    data = json.load(sys.stdin)
+    d = parse_val(data.get("value",""))
+    path = ""
+    if isinstance(d, dict):
+        path = d.get("intermediate_file") or ""
+        if not path:
+            api = d.get("api_response", {})
+            outs = api.get("output_files", []) if isinstance(api, dict) else []
+            for p in outs:
+                if isinstance(p, str) and p.endswith("_intermediate.json"):
+                    path = p
+                    break
+    print(path)
 except Exception:
-    print("{}")
+    print("")
 PY
 }
 
@@ -388,33 +400,15 @@ processing_mode=digital_pdf"
     return 1
   fi
 
-  # ПОЛУЧЕНИЕ ФАКТИЧЕСКОГО ПУТИ ПРОМЕЖУТОЧНОГО ФАЙЛА ИЗ XCom (prepare_for_next_stage)
-  local xcom_json
-  xcom_json=$(get_xcom_return_value "document_preprocessing" "$dag1_run_id" "prepare_for_next_stage")
+  # ПОЛУЧЕНИЕ ФАКТИЧЕСКОГО ПУТИ ПРОМЕЖУТОЧНОГО ФАЙЛА ИЗ XCom
+  local prepared_json
+  prepared_json=$(get_xcom_return_value "document_preprocessing" "$dag1_run_id" "prepare_for_next_stage")
   local intermediate_file_prepared
-  intermediate_file_prepared=$(echo "$xcom_json" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('intermediate_file',''))" 2>/dev/null || echo "")
+  intermediate_file_prepared=$(echo "$prepared_json" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('intermediate_file',''))" 2>/dev/null || echo "")
 
-  # ДОБАВЛЕНО: альтернативный путь из XCom задачи process_document_with_api (doc_*_intermediate.json)
-  local pda_json
-  pda_json=$(get_task_xcom_json "document_preprocessing" "$dag1_run_id" "process_document_with_api")
+  # Альтернативный путь из process_document_with_api (doc_*_intermediate.json)
   local intermediate_file_doc
-  intermediate_file_doc=$(echo "$pda_json" | python3 - << 'PY'
-import sys, json
-try:
-    d=json.load(sys.stdin)
-    # приоритет: явное поле intermediate_file, иначе из api_response.output_files
-    path = d.get('intermediate_file') or ""
-    if not path:
-        api = d.get('api_response', {})
-        outs = api.get('output_files', []) if isinstance(api, dict) else []
-        # ищем *_intermediate.json среди output_files
-        cand = [p for p in outs if isinstance(p, str) and p.endswith('_intermediate.json')]
-        path = cand if cand else ""
-    print(path)
-except Exception:
-    print("")
-PY
-)
+  intermediate_file_doc=$(get_task_intermediate_file "document_preprocessing" "$dag1_run_id" "process_document_with_api")
 
   # Выбор итогового intermediate_file: предпочитаем doc_*_intermediate.json, иначе prepared
   local intermediate_file="$intermediate_file_prepared"
@@ -427,14 +421,12 @@ PY
 
   if [ -z "$intermediate_file" ]; then
     log "ERROR" "❌ Не удалось получить intermediate_file из XCom DAG1"
-    log "ERROR" "XCom (prepare_for_next_stage): $(echo "$xcom_json" | tr -d '\n' | cut -c1-400)..."
-    log "ERROR" "XCom (process_document_with_api): $(echo "$pda_json" | tr -d '\n' | cut -c1-400)..."
+    log "ERROR" "XCom (prepare_for_next_stage): $(echo "$prepared_json" | tr -d '\n' | cut -c1-400)..."
     return 1
   fi
 
   # Этап 2.2: Content Transformation
   # ИСПРАВЛЕНО: передаём фактический intermediate_file из DAG1 и статус готовности
-  # УБРАНО: original_config=$base_config (ломал структуру conf)
   log "INFO" "🔄 Этап 2.2: Преобразование в Markdown..."
   local transform_config="
 intermediate_file=$intermediate_file
@@ -450,7 +442,7 @@ preserve_technical_terms=true"
     if wait_for_dag_completion "content_transformation" "$dag2_run_id" "Content Transformation" 1200; then
       log "INFO" "✅ Этап 2.2 завершен: Markdown создан"
     else
-      # ДОБАВЛЕНО: если неуспешно и есть альтернативный путь — пробуем вторую попытку
+      # Повторная попытка сPrepared-файлом, если из doc-intermediate не вышло
       if [ -n "$intermediate_file_prepared" ] && [ "$intermediate_file" != "$intermediate_file_prepared" ]; then
         log "WARN" "⚠️ Повторная попытка DAG2 с prepared-файлом: $intermediate_file_prepared"
         transform_config="
@@ -478,7 +470,6 @@ preserve_technical_terms=true"
 
   # Этап 2.3: Quality Assurance (5 уровней)
   log "INFO" "🔄 Этап 2.3: 5-уровневая валидация качества..."
-  # УБРАНО: original_config=$base_config (не требуется для DAG4, ведёт к некорректному conf)
   local qa_config="
 translated_file=/app/output_md_zh/${timestamp}_${filename%.pdf}.md
 translated_content=from_file

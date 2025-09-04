@@ -30,8 +30,8 @@ AIRFLOW_USERNAME="${AIRFLOW_USERNAME:-admin}"
 AIRFLOW_PASSWORD="${AIRFLOW_PASSWORD:-admin}"
 
 # Локальные папки
-HOST_INPUT_DIR="${SCRIPT_DIR}/input_pdf"
-HOST_OUTPUT_DIR="${SCRIPT_DIR}/output_md_zh"
+HOST_INPUT_DIR="${SCRIPT_DIR}/input"
+HOST_OUTPUT_DIR="${SCRIPT_DIR}/output/zh"
 LOGS_DIR="${SCRIPT_DIR}/logs"
 
 # Создание директорий

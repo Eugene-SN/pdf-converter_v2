@@ -107,9 +107,9 @@ class ConfigUtils:
         base_path = os.getenv('PROCESSING_BASE_PATH', '/mnt/storage/apps/pdf-converter')
         
         paths = {
-            'input_pdf': os.path.join(base_path, 'input_pdf'),
+            'input_pdf': os.path.join(base_path, 'input'),
             'temp_dir': os.path.join(base_path, 'temp'),  # НЕ используем /app/temp!
-            'output_md': os.path.join(base_path, 'output_md'),
+            'output_md': os.path.join(base_path, 'output/md'),
             'logs': os.path.join(base_path, 'logs'),
             'work_dir': os.getenv('WORK_DIR', '/tmp/document_processor')
         }

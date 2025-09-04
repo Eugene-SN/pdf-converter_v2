@@ -270,6 +270,7 @@ def check_stage2_completion(**context) -> Dict[str, Any]:
         # Поиск результирующего MD файла
         expected_md_file = f"/app/output/zh/{timestamp}_{filename.replace('.pdf', '.md')}"
         host_md_file = f"{master_config['host_output_zh_dir']}/{timestamp}_{filename.replace('.pdf', '.md')}"
+        fallback_md_file = f"/opt/airflow/output/zh/{timestamp}_{filename.replace('.pdf', '.md')}"
 
         md_file_path = None
         for path in [expected_md_file, host_md_file]:
@@ -284,7 +285,8 @@ def check_stage2_completion(**context) -> Dict[str, Any]:
                 f"/app/output/zh/*{timestamp}*.md",
                 f"{master_config['host_output_zh_dir']}/*{timestamp}*.md", 
                 f"/app/output/zh/{filename.replace('.pdf', '.md')}",
-                f"{master_config['host_output_zh_dir']}/{filename.replace('.pdf', '.md')}"
+                f"{master_config['host_output_zh_dir']}/{filename.replace('.pdf', '.md')}",
+                f"/opt/airflow/output/zh/*{timestamp}*.md"
             ]
 
             for pattern in patterns:

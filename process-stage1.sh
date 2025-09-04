@@ -25,9 +25,10 @@ NC='\033[0m' # No Color
 # Конфигурация сервисов (берем из env HOST переменных; fallback на прежние дефолты)
 AIRFLOW_URL="${AIRFLOW_BASE_URL_HOST:-http://localhost:8090}"
 DOCUMENT_PROCESSOR_URL="${DOCUMENT_PROCESSOR_URL_HOST:-http://localhost:8001}"
-VLLM_URL="${VLLM_SERVER_URL_HOST:-http://localhost:8000}"
+VLLM_SERVER_URL="${VLLM_SERVER_URL_HOST:-http://localhost:8000}"
 QA_URL="${QUALITY_ASSURANCE_URL_HOST:-http://localhost:8002}"
 TRANSLATOR_URL="${TRANSLATOR_URL_HOST:-http://localhost:8003}"
+AIRFLOW__WEBSERVER__BASE_URL="${AIRFLOW__WEBSERVER__BASE_URL:-http://localhost:8090}"
 
 AIRFLOW_USERNAME="${AIRFLOW_USERNAME:-admin}"
 AIRFLOW_PASSWORD="${AIRFLOW_PASSWORD:-admin}"
@@ -378,7 +379,7 @@ trigger_single_file() {
     if [ -n "$dag_run_id" ]; then
       print_success "DAG запущен успешно!"
       print_info "DAG Run ID: $dag_run_id"
-      local monitoring_url="$AIRFLOW_URL/dags/document_preprocessing/grid?dag_run_id=$dag_run_id"
+      local monitoring_url="$AIRFLOW__WEBSERVER__BASE_URL/dags/document_preprocessing/grid?dag_run_id=$dag_run_id"
       print_info "Мониторинг: $monitoring_url"
       return 0
     else
@@ -501,7 +502,7 @@ main() {
       print_success "✅ STAGE 1 (batch) ЗАПУЩЕН УСПЕШНО!"
       print_info ""
       print_info "Следующие шаги:"
-      print_info "1. Мониторить прогресс в Airflow UI: $AIRFLOW_URL"
+      print_info "1. Мониторить прогресс в Airflow UI: $AIRFLOW__WEBSERVER__BASE_URL"
       print_info "2. После завершения запустить Stage 2: ./process-stage2.sh"
       print_info "3. Проверить логи: docker logs document-processor"
     else
@@ -513,7 +514,7 @@ main() {
       print_success "✅ STAGE 1 ЗАПУЩЕН УСПЕШНО!"
       print_info ""
       print_info "Следующие шаги:"
-      print_info "1. Мониторить прогресс в Airflow UI: $AIRFLOW_URL"
+      print_info "1. Мониторить прогресс в Airflow UI: $AIRFLOW__WEBSERVER__BASE_URL"
       print_info "2. После завершения запустить Stage 2: ./process-stage2.sh"
       print_info "3. Проверить логи: docker logs document-processor"
     else

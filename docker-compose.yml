@@ -64,6 +64,7 @@ x-airflow-common: &airflow-common
     OUTPUT_FOLDER_RU: ${OUTPUT_FOLDER_RU}
     OUTPUT_FOLDER_EN: ${OUTPUT_FOLDER_EN}
     TEMP_FOLDER: ${TEMP_FOLDER}
+    AIRFLOW_TEMP_DIR: "/opt/airflow/temp"
 
     # Логирование
     AIRFLOW__LOGGING__LOGGING_LEVEL: ${AIRFLOW__LOGGING__LOGGING_LEVEL}
@@ -483,7 +484,7 @@ services:
       - ${PROJ_DIR}/logs:/opt/airflow/logs
       - ${PROJ_DIR}/airflow/config:/opt/airflow/config
       - ${PROJ_DIR}/airflow/plugins:/opt/airflow/plugins
-      - ${PROJ_DIR}/temp:/app/temp
+      - ${PROJ_DIR}/temp:/opt/airflow/temp
       - ${PROJ_DIR}/input_pdf:/mnt/storage/apps/pdf-converter/input_pdf:ro   
     healthcheck:
       test: ["CMD", "pgrep", "-f", "airflow scheduler"]
@@ -504,6 +505,7 @@ services:
       - ${PROJ_DIR}/logs:/opt/airflow/logs
       - ${PROJ_DIR}/airflow/config:/opt/airflow/config
       - ${PROJ_DIR}/airflow/plugins:/opt/airflow/plugins
+      - ${PROJ_DIR}/temp:/opt/airflow/temp
       - ${PROJ_DIR}/input_pdf:/mnt/storage/apps/pdf-converter/input_pdf:ro   
     healthcheck:
       test: ["CMD-SHELL", "celery -A airflow.providers.celery.executors.celery_executor.app inspect ping"]
